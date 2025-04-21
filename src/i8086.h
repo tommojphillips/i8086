@@ -8,18 +8,6 @@
 
 #include <stdint.h>
 
-#define SF cpu->status.sf
-#define CF cpu->status.cf
-#define ZF cpu->status.zf
-#define PF cpu->status.pf
-#define OF cpu->status.of
-#define AF cpu->status.af
-#define DF cpu->status.df
-#define TF cpu->status.tf
-#define IF cpu->status.in
-
-#define IP cpu->ip
-
 #define REG_AL 0
 #define REG_CL 1
 #define REG_DL 2
@@ -42,6 +30,18 @@
 #define SEG_CS 1
 #define SEG_SS 2
 #define SEG_DS 3
+
+#define SF cpu->status.sf
+#define CF cpu->status.cf
+#define ZF cpu->status.zf
+#define PF cpu->status.pf
+#define OF cpu->status.of
+#define AF cpu->status.af
+#define DF cpu->status.df
+#define TF cpu->status.tf
+#define IF cpu->status.in
+
+#define IP cpu->ip
 
 #define AL cpu->registers[REG_AL].l // accum low byte 8bit register
 #define AH cpu->registers[REG_AL].h // accum high byte 8bit register
@@ -67,8 +67,8 @@
 #define CS cpu->segments[SEG_CS] // Code segment register
 #define SS cpu->segments[SEG_SS] // Stack segment register
 #define DS cpu->segments[SEG_DS] // Data segment register
-
-// byte/word operation. 0 = byte; 1 = word
+ 
+ // byte/word operation. 0 = byte; 1 = word
 #define W (cpu->opcode & 0x1)
 
 // byte/word operation. 0 = byte; 1 = word
@@ -126,16 +126,16 @@
 #define FETCH_WORD()           cpu->mm.funcs.read_mem_word(cpu->mm.mem, IP_ADDR); IP += 2
 
 /* Read byte from IO port word */
-#define READ_IO_WORD(port)     cpu->mm.funcs.read_io_word(cpu->mm.mem, port)
+#define READ_IO_WORD(port)     cpu->mm.funcs.read_io_word(port)
 
 /* Read byte from IO port */
-#define READ_IO(port)          cpu->mm.funcs.read_io_byte(cpu->mm.mem, port)
+#define READ_IO(port)          cpu->mm.funcs.read_io_byte(port)
 
 /* Write byte to IO port */
-#define WRITE_IO_WORD(port,value) cpu->mm.funcs.write_io_word(cpu->mm.mem, port, value)
+#define WRITE_IO_WORD(port,value) cpu->mm.funcs.write_io_word(port, value)
 
 /* Write byte to IO port */
-#define WRITE_IO(port,value)   cpu->mm.funcs.write_io_byte(cpu->mm.mem, port, value)
+#define WRITE_IO(port,value)   cpu->mm.funcs.write_io_byte(port, value)
 
 /* Get memory pointer */
 #define GET_MEM_PTR(addr)      cpu->mm.funcs.get_mem_ptr(cpu->mm.mem, addr)
@@ -153,51 +153,24 @@
 #define DECODE_REQ_CYCLE 1
 #define DECODE_UNDEFINED 2
 
-#define CLR_CF() CF = 0
-#define CLR_OF() OF = 0
-#define CLR_SF() SF = 0
-#define CLR_PF() PF = 0
-#define CLR_ZF() ZF = 0
-#define CLR_AF() AF = 0
-
-#define SET_ZF(r) ZF = (r) == 0
-
-#define SET_CF8(r) CF = (r) > 0xFF
-#define SET_OF8(r) OF = (r) > 0x7F
-#define SET_SF8(r) SF = ((r) & 0x80) >> 7
-#define SET_PF8(r) PF = alu_cal_parity8(r)
-#define SET_ZF8(r) SET_ZF(r)
-
-#define SET_AF_ADD8(x,y,r) AF = (((x) ^ (y) ^ (r)) & 0x10) == 0x10
-#define SET_AF_SUB8(x,y,r) AF = (((x) ^ (y) ^ (r)) & 0x10) == 0
-
-#define SET_CF16(r) CF = (r) > 0xFFFF
-#define SET_OF16(r) OF = (r) > 0x7FFF
-#define SET_SF16(r) SF = ((r) & 0x8000) >> 15
-#define SET_PF16(r) PF = alu_cal_parity16(r)
-#define SET_ZF16(r) SET_ZF(r)
-
-#define SET_AF_ADD16(x,y,r) AF = (((x) ^ (y) ^ (r)) & 0x10) == 0x10
-#define SET_AF_SUB16(x,y,r) AF = (((x) ^ (y) ^ (r)) & 0x10) == 0
-
-/* Jump condition */
+ /* Jump condition */
 enum {
-	JCC_OVERFLOW = 0b0000,
-	JCC_NOT_OVERFLOW = 0b0001,
-	JCC_CARRY = 0b0010,
-	JCC_NOT_CARRY = 0b0011,
-	JCC_ZERO = 0b0100,
-	JCC_NOT_ZERO = 0b0101,
-	JCC_BELOW_OR_EQU = 0b0110,
-	JCC_ABOVE = 0b0111,
-	JCC_SIGN = 0b1000,
-	JCC_NOT_SIGN = 0b1001,
-	JCC_PARITY = 0b1010,
-	JCC_NOT_PARITY = 0b1011,
-	JCC_LESS = 0b1100,
-	JCC_NOT_LESS = 0b1101,
-	JCC_LESS_OR_EQU = 0b1110,
-	JCC_NOT_LESS_OR_EQU = 0b1111,
+	X86_JCC_JO = 0b0000,
+	X86_JCC_JNO = 0b0001,
+	X86_JCC_JC = 0b0010,
+	X86_JCC_JNC = 0b0011,
+	X86_JCC_JZ = 0b0100,
+	X86_JCC_JNZ = 0b0101,
+	X86_JCC_JBE = 0b0110,
+	X86_JCC_JA = 0b0111,
+	X86_JCC_JS = 0b1000,
+	X86_JCC_JNS = 0b1001,
+	X86_JCC_JPE = 0b1010,
+	X86_JCC_JPO = 0b1011,
+	X86_JCC_JL = 0b1100,
+	X86_JCC_JGE = 0b1101,
+	X86_JCC_JLE = 0b1110,
+	X86_JCC_JG = 0b1111,
 };
 
 /* 20bit address */
@@ -267,11 +240,11 @@ typedef struct I8086_FUNCS {
 
 	void* (*get_mem_ptr)(uint8_t*, uint20_t);            // Get mem pointer
 
-	uint8_t(*read_io_byte)(uint8_t*, uint16_t);          // read io byte
-	void(*write_io_byte)(uint8_t*, uint16_t, uint8_t);   // write io byte
+	uint8_t(*read_io_byte)(uint16_t);          // read io byte
+	void(*write_io_byte)(uint16_t, uint8_t);   // write io byte
 
-	uint16_t(*read_io_word)(uint8_t*, uint16_t);         // read io byte
-	void(*write_io_word)(uint8_t*, uint16_t, uint16_t);  // write io byte	
+	uint16_t(*read_io_word)(uint16_t);         // read io byte
+	void(*write_io_word)(uint16_t, uint16_t);  // write io byte	
 } I8086_FUNCS;
 
 /* I8086 Memory */
