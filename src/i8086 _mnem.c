@@ -17,11 +17,14 @@
 
 /* Get segment override prefix */
 #undef GET_SEG
-#define GET_SEG(seg) ((cpu->state->segment_prefix != 0xFF) ? cpu->state->segment_prefix : seg)
+#define GET_SEG(seg)       ((cpu->state->segment_prefix != 0xFF) ? cpu->state->segment_prefix : seg)
 
 /* Get 20bit address SEG:ADDR */
 #undef GET_ADDR
 #define GET_ADDR(seg, addr) (((cpu->state->segments[seg] << 4) + addr) & 0xFFFFF)
+
+ /* Get 20bit code segment address CS:ADDR */
+#define IP_ADDR            GET_ADDR(SEG_CS, IP)
 
 /* Fetch word at CS:IP. Inc IP by 2 */
 #undef FETCH_BYTE
@@ -50,8 +53,11 @@ static const char* seg_mnem[] = {
 	"es", "cs", "ss", "ds"
 };
 
-#define MNEM(x, ...) sprintf(cpu->mnem+strlen(cpu->mnem), x, __VA_ARGS__)
+#define LABEL_OFFSET(x) (IP+x)
+//#define LABEL_OFFSET(x) (x)
+
 #define MNEM_F(mem, x, ...) sprintf(mem+strlen(mem), x, __VA_ARGS__)
+#define MNEM(x, ...) MNEM_F(cpu->mnem, x, __VA_ARGS__)
 
 /* Swap pointers if 'D' is set bXXXXXXDX */
 static void get_direction(I8086_MNEM* cpu, void** ptr1, void** ptr2) {
@@ -166,7 +172,7 @@ static void add_rm_imm(I8086_MNEM* cpu) {
 	else {
 		const char* rm = modrm_get_mnem8(cpu);
 		uint8_t imm = FETCH_BYTE();
-		MNEM("add %s, %04X", rm, imm);
+		MNEM("add %s, %02X", rm, imm);
 	}
 }
 static void add_rm_reg(I8086_MNEM* cpu) {
@@ -216,7 +222,7 @@ static void or_rm_imm(I8086_MNEM* cpu) {
 	else {
 		const char* rm = modrm_get_mnem8(cpu);
 		uint8_t imm = FETCH_BYTE();
-		MNEM("or %s, %04X", rm, imm);
+		MNEM("or %s, %02X", rm, imm);
 	}
 }
 static void or_rm_reg(I8086_MNEM* cpu) {
@@ -266,7 +272,7 @@ static void adc_rm_imm(I8086_MNEM* cpu) {
 	else {
 		const char* rm = modrm_get_mnem8(cpu);
 		uint8_t imm = FETCH_BYTE();
-		MNEM("adc %s, %04X", rm, imm);
+		MNEM("adc %s, %02X", rm, imm);
 	}
 }
 static void adc_rm_reg(I8086_MNEM* cpu) {
@@ -316,7 +322,7 @@ static void sbb_rm_imm(I8086_MNEM* cpu) {
 	else {
 		const char* rm = modrm_get_mnem8(cpu);
 		uint8_t imm = FETCH_BYTE();
-		MNEM("sbb %s, %04X", rm, imm);
+		MNEM("sbb %s, %02X", rm, imm);
 	}
 }
 static void sbb_rm_reg(I8086_MNEM* cpu) {
@@ -366,7 +372,7 @@ static void and_rm_imm(I8086_MNEM* cpu) {
 	else {
 		const char* rm = modrm_get_mnem8(cpu);
 		uint8_t imm = FETCH_BYTE();
-		MNEM("and %s, %04X", rm, imm);
+		MNEM("and %s, %02X", rm, imm);
 	}
 }
 static void and_rm_reg(I8086_MNEM* cpu) {
@@ -416,7 +422,7 @@ static void sub_rm_imm(I8086_MNEM* cpu) {
 	else {
 		const char* rm = modrm_get_mnem8(cpu);
 		uint8_t imm = FETCH_BYTE();
-		MNEM("sub %s, %04X", rm, imm);
+		MNEM("sub %s, %02X", rm, imm);
 	}
 }
 static void sub_rm_reg(I8086_MNEM* cpu) {
@@ -466,7 +472,7 @@ static void xor_rm_imm(I8086_MNEM* cpu) {
 	else {
 		const char* rm = modrm_get_mnem8(cpu);
 		uint8_t imm = FETCH_BYTE();
-		MNEM("xor %s, %04X", rm, imm);
+		MNEM("xor %s, %02X", rm, imm);
 	}
 }
 static void xor_rm_reg(I8086_MNEM* cpu) {
@@ -516,7 +522,7 @@ static void cmp_rm_imm(I8086_MNEM* cpu) {
 	else {
 		const char* rm = modrm_get_mnem8(cpu);
 		uint8_t imm = FETCH_BYTE();
-		MNEM("cmp %s, %04X", rm, imm);
+		MNEM("cmp %s, %02X", rm, imm);
 	}
 }
 static void cmp_rm_reg(I8086_MNEM* cpu) {
@@ -558,7 +564,7 @@ static void test_rm_imm(I8086_MNEM* cpu) {
 	else {
 		const char* rm = modrm_get_mnem8(cpu);
 		uint8_t imm = FETCH_BYTE();
-		MNEM("test %s, %04X", rm, imm);
+		MNEM("test %s, %02X", rm, imm);
 	}
 }
 static void test_rm_reg(I8086_MNEM* cpu) {
@@ -912,105 +918,106 @@ static void sar(I8086_MNEM* cpu) {
 static void jcc(I8086_MNEM* cpu) {
 	/* conditional jump(70-7F) b011XCCCC
 	   8086 cpu decode 60-6F the same as 70-7F */
-	int8_t offset = (int8_t)FETCH_BYTE();
+	int8_t imm = (int8_t)FETCH_BYTE();
+	uint16_t offset = LABEL_OFFSET(imm);
 	switch (CCCC) {
-		case JCC_OVERFLOW:
-			MNEM("jo %02X", offset);
+		case X86_JCC_JO:
+			MNEM("jo %04X", offset);
 			break;
-		case JCC_NOT_OVERFLOW:
-			MNEM("jno %02X", offset);
+		case X86_JCC_JNO:
+			MNEM("jno %04X", offset);
 			break;
-		case JCC_CARRY:
-			MNEM("jc %02X", offset);
+		case X86_JCC_JC:
+			MNEM("jc %04X", offset);
 			break;
-		case JCC_NOT_CARRY:
-			MNEM("jnc %02X", offset);
+		case X86_JCC_JNC:
+			MNEM("jnc %04X", offset);
 			break;
-		case JCC_ZERO:
-			MNEM("jz %02X", offset);
+		case X86_JCC_JZ:
+			MNEM("jz %04X", offset);
 			break;
-		case JCC_NOT_ZERO:
-			MNEM("jnz %02X", offset);
+		case X86_JCC_JNZ:
+			MNEM("jnz %04X", offset);
 			break;
-		case JCC_BELOW_OR_EQU:
-			MNEM("jbe %02X", offset);
+		case X86_JCC_JBE:
+			MNEM("jbe %04X", offset);
 			break;
-		case JCC_ABOVE:
-			MNEM("ja %02X", offset);
+		case X86_JCC_JA:
+			MNEM("ja %04X", offset);
 			break;
-		case JCC_SIGN:
-			MNEM("js %02X", offset);
+		case X86_JCC_JS:
+			MNEM("js %04X", offset);
 			break;
-		case JCC_NOT_SIGN:
-			MNEM("jns %02X", offset);
+		case X86_JCC_JNS:
+			MNEM("jns %04X", offset);
 			break;
-		case JCC_PARITY:
-			MNEM("jpe %02X", offset);
+		case X86_JCC_JPE:
+			MNEM("jpe %04X", offset);
 			break;
-		case JCC_NOT_PARITY:
-			MNEM("jpo %02X", offset);
+		case X86_JCC_JPO:
+			MNEM("jpo %04X", offset);
 			break;
-		case JCC_LESS:
-			MNEM("jl %02X", offset);
+		case X86_JCC_JL:
+			MNEM("jl %04X", offset);
 			break;
-		case JCC_NOT_LESS:
-			MNEM("jnl %02X", offset);
+		case X86_JCC_JGE:
+			MNEM("jge %04X", offset);
 			break;
-		case JCC_LESS_OR_EQU:
-			MNEM("jle %02X", offset);
+		case X86_JCC_JLE:
+			MNEM("jle %04X", offset);
 			break;
-		case JCC_NOT_LESS_OR_EQU:
-			MNEM("jnle %02X", offset);
+		case X86_JCC_JG:
+			MNEM("jg %04X", offset);
 			break;
 	}
 }
 static void jmp_intra_direct(I8086_MNEM* cpu) {
 	/* Jump near (E9) b11101001 */
 	int16_t imm = FETCH_WORD();
-	MNEM("jmp near %04X", imm);
+	MNEM("jmp near %04X", LABEL_OFFSET(imm));
 }
 static void jmp_inter_direct(I8086_MNEM* cpu) {
 	/* Jump addr:seg (EA) b11101010 */
 	uint16_t imm = FETCH_WORD();
 	uint16_t imm2 = FETCH_WORD();
-	MNEM("jmp %04X:%04X", imm, imm2);
+	MNEM("jmp far %04X:%04X", imm2, imm);
 }
 static void jmp_intra_direct_short(I8086_MNEM* cpu) {
 	/* Jump near short (EB) b11101011 */
-	uint8_t imm = FETCH_BYTE();
-	MNEM("jmp near short %02X", imm);
+	int8_t imm = FETCH_BYTE();
+	MNEM("jmp short %04X", LABEL_OFFSET(imm));
 }
 static void jmp_intra_indirect(I8086_MNEM* cpu) {
 	/* Jump intra indirect (FF, R/M reg = 100) b11111111 */	
 	const char* rm = modrm_get_mnem16(cpu);
-	MNEM("jmp %s", rm);
+	MNEM("jmp near %s", rm);
 }
 static void jmp_inter_indirect(I8086_MNEM* cpu) {
 	/* Jump inter indirect (FF, R/M reg = 101) b11111111 */
-	uint16_t* rm = modrm_get_ptr16(cpu->state);
-	MNEM("jmp %04X:%04X", *(rm + 1), *rm);
+	const char* rm = modrm_get_mnem16(cpu);
+	MNEM("jmp far %s", rm);
 }
 
 static void call_intra_direct(I8086_MNEM* cpu) {
 	/* Call disp (E8) b11101000 */
-	uint16_t imm = FETCH_WORD();
-	MNEM("call %04X", imm);
+	int16_t imm = FETCH_WORD();
+	MNEM("call near %04X", LABEL_OFFSET(imm));
 }
 static void call_inter_direct(I8086_MNEM* cpu) {
 	/* Call addr:seg (9A) b10011010 */
 	uint16_t imm = FETCH_WORD();
 	uint16_t imm2 = FETCH_WORD();
-	MNEM("call %04X:%04X", imm, imm2);
+	MNEM("call far %04X:%04X", imm2, imm);
 }
 static void call_intra_indirect(I8086_MNEM* cpu) {
 	/* Call mem/reg (FF, R/M reg = 010) b11111111 */
 	const char* rm = modrm_get_mnem16(cpu);
-	MNEM("call %s", rm);
+	MNEM("call near %s", rm);
 }
 static void call_inter_indirect(I8086_MNEM* cpu) {
-	/* Call mem (FF, R/M reg = 011) b11111111 */	
-	uint16_t* rm = modrm_get_ptr16(cpu->state);
-	MNEM("call %04X:%04X", *(rm + 1), *rm);
+	/* Call mem (FF, R/M reg = 011) b11111111 */
+	const char* rm = modrm_get_mnem16(cpu);
+	MNEM("call far %s", rm);
 }
 
 static void ret_intra_add_imm(I8086_MNEM* cpu) {
@@ -1082,18 +1089,14 @@ static void mov_rm_reg(I8086_MNEM* cpu) {
 static void mov_accum_mem(I8086_MNEM* cpu) {
 	/* mov AL/AX, [addr] (A0/A1/A2/A3) b101000DW */
 	uint16_t addr = FETCH_WORD();
+	MNEM_F(cpu->addressing_str, "[%04X]", addr);
+	const char* mem = cpu->addressing_str;
 	if (W) {
-		char str[2 + 4 + 1] = { 0 };
-		sprintf(str, "[%04X]", addr);
-		const char* mem = str;
 		const char* reg = GET_REG16(REG_AX);
 		get_direction(cpu, &reg, &mem);
 		MNEM("mov %s, %s", reg, mem);
 	}
 	else {
-		char str[2 + 4 + 1] = { 0 };
-		sprintf(str, "[%04X]", addr);
-		const char* mem = str;
 		const char* reg = GET_REG8(REG_AL);
 		get_direction(cpu, &reg, &mem);
 		MNEM("mov %s, %s", reg, mem);
@@ -1236,12 +1239,14 @@ static void scas(I8086_MNEM* cpu) {
 static void les(I8086_MNEM* cpu) {
 	/* les (C4) b11000100 */
 	cpu->modrm.byte = FETCH_BYTE();
-	MNEM("les");
+	const char* rm = modrm_get_mnem16(cpu);
+	MNEM("les %s", rm);
 }
 static void lds(I8086_MNEM* cpu) {
 	/* lds (C5) b11000101 */
 	cpu->modrm.byte = FETCH_BYTE();
-	MNEM("lds");
+	const char* rm = modrm_get_mnem16(cpu);
+	MNEM("lds %s", rm);
 }
 
 static void xlat(I8086_MNEM* cpu) {
@@ -1249,34 +1254,47 @@ static void xlat(I8086_MNEM* cpu) {
 	MNEM("xlat");
 }
 
+static void esc(I8086_MNEM* cpu) {
+	/* esc (D8-DF R/M reg = XXX) b11010REG */
+	cpu->modrm.byte = FETCH_BYTE();
+	uint8_t esc_opcode = ((cpu->opcode & 7) << 3) | cpu->modrm.reg;
+	const char* rm = modrm_get_mnem16(cpu);
+	printf("esc %02X, %s", esc_opcode, rm);
+}
+
 static void loopnz(I8086_MNEM* cpu) {
 	/* loop while not zero (E0) b1110000Z */
 	int8_t disp = FETCH_BYTE();
-	MNEM("loopnz %02X", disp);
+	MNEM("loopnz %04X", LABEL_OFFSET(disp));
 }
 static void loopz(I8086_MNEM* cpu) {
 	/* loop while zero (E1) b1110000Z */
 	int8_t disp = FETCH_BYTE();
-	MNEM("loopz %02X", disp);
+	MNEM("loopz %04X", LABEL_OFFSET(disp));
 }
 static void loop(I8086_MNEM* cpu) {
 	/* loop if CX not zero (E2) b11100010 */
 	int8_t disp = FETCH_BYTE();
-	MNEM("loop %02X", disp);
+	MNEM("loop %04X", LABEL_OFFSET(disp));
 }
 static void jcxz(I8086_MNEM* cpu) {
 	/* jump if CX zero (E3) b11100011 */
 	int8_t disp = FETCH_BYTE();
-	MNEM("jcxz %02X", disp);
+	MNEM("jcxz %04X", LABEL_OFFSET(disp));
 }
 
 static void in_accum_imm(I8086_MNEM* cpu) {
 	/* in AL/AX, imm */
 	uint8_t imm = FETCH_BYTE();
-	MNEM("in ax, %02X", imm);
+	if (W) {
+		MNEM("in ax, %02X", imm);
+	}
+	else {
+		MNEM("in al, %02X", imm);
+	}
 }
 static void out_accum_imm(I8086_MNEM* cpu) {
-	/* out AL/AX, imm */
+	/* out imm, AL/AX */
 	uint8_t imm = FETCH_BYTE();
 	if (W) {
 		MNEM("out %02X, ax", imm);
@@ -1310,7 +1328,7 @@ static void int_(I8086_MNEM* cpu) {
  	if (cpu->opcode & 0x1) {
 		type = FETCH_BYTE();
 	}
-	MNEM("int %u", type);
+	MNEM("int %X", type);
 }
 static void into(I8086_MNEM* cpu) {
 	/* interrupt on overflow (CE) b11001110 */
@@ -1321,15 +1339,14 @@ static void iret(I8086_MNEM* cpu) {
 	MNEM("iret");
 }
 
-static int repnz(I8086_MNEM* cpu) {
-	/* repnz (F2) b1111001Z */
-	sprintf(cpu->mnem+strlen(cpu->mnem), "repnz ");
-	cpu->opcode = FETCH_BYTE();
-	return DECODE_REQ_CYCLE;
-}
-static int repz(I8086_MNEM* cpu) {
-	/* rep/repz (F3) b1111001Z */
-	MNEM("repz ");
+static int rep(I8086_MNEM* cpu) {
+	/* rep/repz/repnz (F2/F3) b1111001Z */
+	if (cpu->opcode & 0x1) {
+		MNEM("repz ");
+	}
+	else {
+		MNEM("repnz ");
+	}
 	cpu->opcode = FETCH_BYTE();
 	return DECODE_REQ_CYCLE;
 }
@@ -1856,6 +1873,16 @@ static int i8086_decode_opcode(I8086_MNEM* cpu) {
 		case 0xD7:
 			xlat(cpu);
 			break;
+		case 0xD8:
+		case 0xD9:
+		case 0xDA:
+		case 0xDB:
+		case 0xDC:
+		case 0xDD:
+		case 0xDE:
+		case 0xDF:
+			esc(cpu);
+			break;
 
 		case 0xE0:
 			loopnz(cpu);
@@ -1899,14 +1926,10 @@ static int i8086_decode_opcode(I8086_MNEM* cpu) {
 			break;
 
 		case 0xF0:
-			lock(cpu);
-			break;
+			return lock(cpu);
 		case 0xF2:
-			repnz(cpu);
-			break;
 		case 0xF3:
-			repz(cpu);
-			break;
+			return rep(cpu);
 		case 0xF4:
 			hlt(cpu);
 			break;

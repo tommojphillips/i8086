@@ -18,13 +18,13 @@
     <ClInclude Include="..\src\i8086.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\src\modrm.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="..\src\alu.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\src\i8086_mnem.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\modrm.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -32,16 +32,13 @@
     <ClCompile Include="..\src\i8086.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\modrm.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="..\src\alu.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\main.c">
+    <ClCompile Include="..\src\i8086 _mnem.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\i8086 _mnem.c">
+    <ClCompile Include="..\src\modrm.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
