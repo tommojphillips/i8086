@@ -9,7 +9,6 @@
 
 #include "i8086.h"
 #include "i8086_mnem.h"
-#include "modrm.h"
 
  /* re-define IP as counter */
 #undef IP

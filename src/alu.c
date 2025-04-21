@@ -5,7 +5,6 @@
 
 #include <stdint.h>
 
-#include "modrm.h"
 #include "i8086.h"
 #include "alu.h"
 

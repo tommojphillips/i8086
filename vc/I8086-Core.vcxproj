@@ -130,13 +130,11 @@
     <ClInclude Include="..\src\alu.h" />
     <ClInclude Include="..\src\i8086.h" />
     <ClInclude Include="..\src\i8086_mnem.h" />
-    <ClInclude Include="..\src\modrm.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\src\alu.c" />
     <ClCompile Include="..\src\i8086 _mnem.c" />
     <ClCompile Include="..\src\i8086.c" />
-    <ClCompile Include="..\src\modrm.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
