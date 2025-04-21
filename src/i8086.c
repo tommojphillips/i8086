@@ -7,7 +7,6 @@
 
 #include "i8086.h"
 #include "alu.h"
-#include "modrm.h"
 
 void i8086_push_byte(I8086* cpu, uint8_t value) {
 	SP -= 1;
@@ -26,7 +25,18 @@ void i8086_pop_word(I8086* cpu, uint16_t* value) {
 	SP += 2;
 }
 
-/* Swap pointers if 'D' is set bXXXXXXDX */
+void i8086_int(I8086* cpu, uint8_t type) {
+	i8086_push_word(cpu, cpu->status.word);
+	i8086_push_word(cpu, CS);
+	i8086_push_word(cpu, IP);
+	uint20_t addr = type * 4;
+	CS = READ_WORD(addr + 2);
+	IP = READ_WORD(addr);
+	IF = 0;
+	TF = 0;
+}
+
+/* Swap pointers if 'D' bit is set in opcode bXXXXXXDX */
 static void get_direction(I8086* cpu, void** ptr1, void** ptr2) {
 	if (D) {
 		void* tmp = *ptr1;
@@ -35,72 +45,125 @@ static void get_direction(I8086* cpu, void** ptr1, void** ptr2) {
 	}
 }
 
-static uint20_t modrm_get_base_address(I8086* cpu) {
+/* Mod R/M */
+
+static uint16_t modrm_get_base_address(I8086* cpu) {
+	// Get 1bit address
 	switch (cpu->modrm.rm) {
-	case 0b000: // base rel indexed - BX + SI
-		return DATA_ADDR(BX + SI);
-	case 0b001: // base rel indexed - BX + DI
-		return DATA_ADDR(BX + DI);
-	case 0b010: // base rel indexed stack - BP + SI
-		return STACK_ADDR(BP + SI);
-	case 0b011: // base rel indexed stack - BP + DI
-		return STACK_ADDR(BP + DI);
-	case 0b100: // implied SI
-		return DATA_ADDR(SI);
-	case 0b101: // implied DI
-		return DATA_ADDR(DI);
-	case 0b110: // implied BP
-		return STACK_ADDR(BP);
-	case 0b111: // implied BX
-		return DATA_ADDR(BX);
+		case 0b000: // base rel indexed - BX + SI
+			return BX + SI;
+		case 0b001: // base rel indexed - BX + DI
+			return BX + DI;
+		case 0b010: // base rel indexed stack - BP + SI
+			return BP + SI;
+		case 0b011: // base rel indexed stack - BP + DI
+			return BP + DI;
+		case 0b100: // implied SI
+			return SI;
+		case 0b101: // implied DI
+			return DI;
+		case 0b110: // implied BP
+			return BP;
+		case 0b111: // implied BX
+			return BX;
 	}
 	return 0;
 }
-static void* modrm_get_ptr(I8086* cpu) {
-	// Get R/M pointer
+static uint20_t modrm_get_effective_base_address(I8086* cpu) {
+	// Get 20bit effective base address
+	switch (cpu->modrm.rm) {
+		case 0b000: // base rel indexed - BX + SI
+			return DATA_ADDR(BX + SI);
+		case 0b001: // base rel indexed - BX + DI
+			return DATA_ADDR(BX + DI);
+		case 0b010: // base rel indexed stack - BP + SI
+			return STACK_ADDR(BP + SI);
+		case 0b011: // base rel indexed stack - BP + DI
+			return STACK_ADDR(BP + DI);
+		case 0b100: // implied SI
+			return DATA_ADDR(SI);
+		case 0b101: // implied DI
+			return DATA_ADDR(DI);
+		case 0b110: // implied BP
+			return STACK_ADDR(BP);
+		case 0b111: // implied BX
+			return DATA_ADDR(BX);
+	}
+	return 0;
+}
+static uint16_t modrm_get_addr(I8086* cpu) {
+	// Get 16bit address
+	uint16_t addr = 0;
+	switch (cpu->modrm.mod) {
+
+		case 0b00:
+			if (cpu->modrm.rm == 0b110) {
+				// displacement mode - [ disp16 ]
+				addr = FETCH_WORD();
+			}
+			else {
+				// register mode - [ base16 ]
+				addr = modrm_get_base_address(cpu);
+			}
+			break;
+
+		case 0b01:
+			// memory mode; 8bit displacement - [ base16 + disp8 ]
+			addr = modrm_get_base_address(cpu) + FETCH_BYTE();
+			break;
+
+		case 0b10:
+			// memory mode; 16bit displacement - [ base16 + disp16 ]
+			addr = modrm_get_base_address(cpu) + FETCH_WORD();
+			break;
+	}
+	return addr;
+}
+static uint20_t modrm_get_effective_addr(I8086* cpu) {
+	// Get 20bit effective address
 	uint20_t addr = 0;
 	switch (cpu->modrm.mod) {
 
-	case 0b00:
-		if (cpu->modrm.rm == 0b110) {
-			// displacement mode - [ disp16 ]
-			uint16_t imm = FETCH_WORD();
-			addr = DATA_ADDR(imm);
-		}
-		else {
-			// register mode - [ base16 ]
-			addr = modrm_get_base_address(cpu);
-		}
-		return GET_MEM_PTR(addr);
+		case 0b00:
+			if (cpu->modrm.rm == 0b110) {
+				// displacement mode - [ disp16 ]
+				uint16_t imm = FETCH_WORD();
+				addr = DATA_ADDR(imm);
+			}
+			else {
+				// register mode - [ base16 ]
+				addr = modrm_get_effective_base_address(cpu);
+			}
+			break;
 
-	case 0b01:
-		// memory mode; 8bit displacement - [ base16 + disp8 ]
-		addr = modrm_get_base_address(cpu) + FETCH_BYTE();
-		return GET_MEM_PTR(addr);
+		case 0b01:
+			// memory mode; 8bit displacement - [ base16 + disp8 ]
+			addr = modrm_get_effective_base_address(cpu) + FETCH_BYTE();
+			break;
 
-	case 0b10:
-		// memory mode; 16bit displacement - [ base16 + disp16 ]
-		addr = modrm_get_base_address(cpu) + FETCH_WORD();
-		return GET_MEM_PTR(addr);
+		case 0b10:
+			// memory mode; 16bit displacement - [ base16 + disp16 ]
+			addr = modrm_get_effective_base_address(cpu) + FETCH_WORD();
+			break;
 	}
-	return 0;
+	return addr;
 }
 uint16_t* modrm_get_ptr16(I8086* cpu) {
-	// Get R/M pointer
+	// Get R/M pointer to 16bit value
 	if (cpu->modrm.mod == 0b11) {
 		return GET_REG16(cpu->modrm.rm);
 	}
 	else {
-		return modrm_get_ptr(cpu);
+		return GET_MEM_PTR(modrm_get_effective_addr(cpu));
 	}
 }
 uint8_t* modrm_get_ptr8(I8086* cpu) {
-	// Get R/M pointer
+	// Get R/M pointer to 8bit value
 	if (cpu->modrm.mod == 0b11) {
 		return GET_REG8(cpu->modrm.rm);
 	}
 	else {
-		return modrm_get_ptr(cpu);
+		return GET_MEM_PTR(modrm_get_effective_addr(cpu));
 	}
 }
 
@@ -811,12 +874,12 @@ static void rol(I8086* cpu) {
 	if (VW) {
 		count = CL;
 	}
-		if (W) {
-			uint16_t* rm = modrm_get_ptr16(cpu);
+	if (W) {
+		uint16_t* rm = modrm_get_ptr16(cpu);
 		alu_rol16(cpu, rm, count);
-		}
-		else {
-			uint8_t* rm = modrm_get_ptr8(cpu);
+	}
+	else {
+		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_rol8(cpu, rm, count);
 	}
 }
@@ -826,12 +889,12 @@ static void ror(I8086* cpu) {
 	if (VW) {
 		count = CL;
 	}
-		if (W) {
-			uint16_t* rm = modrm_get_ptr16(cpu);
+	if (W) {
+		uint16_t* rm = modrm_get_ptr16(cpu);
 		alu_ror16(cpu, rm, count);
-		}
-		else {
-			uint8_t* rm = modrm_get_ptr8(cpu);
+	}
+	else {
+		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_ror8(cpu, rm, count);
 	}
 }
@@ -841,12 +904,12 @@ static void rcl(I8086* cpu) {
 	if (VW) {
 		count = CL;
 	}
-		if (W) {
-			uint16_t* rm = modrm_get_ptr16(cpu);
+	if (W) {
+		uint16_t* rm = modrm_get_ptr16(cpu);
 		alu_rcl16(cpu, rm, count);
-		}
-		else {
-			uint8_t* rm = modrm_get_ptr8(cpu);
+	}
+	else {
+		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_rcl8(cpu, rm, count);
 	}
 }
@@ -856,27 +919,27 @@ static void rcr(I8086* cpu) {
 	if (VW) {
 		count = CL;
 	}
-		if (W) {
-			uint16_t* rm = modrm_get_ptr16(cpu);
+	if (W) {
+		uint16_t* rm = modrm_get_ptr16(cpu);
 		alu_rcr16(cpu, rm, count);
-		}
-		else {
-			uint8_t* rm = modrm_get_ptr8(cpu);
-		alu_rcr8(cpu, rm, count);
-		}
 	}
+	else {
+		uint8_t* rm = modrm_get_ptr8(cpu);
+		alu_rcr8(cpu, rm, count);
+	}
+}
 static void shl(I8086* cpu) {
 	/* Shift left (D0/D1/D2/D3, R/M reg = 100) b110100VW */
 	uint8_t count = 1;
 	if (VW) {
 		count = CL;
 	}
-		if (W) {
-			uint16_t* rm = modrm_get_ptr16(cpu);
+	if (W) {
+		uint16_t* rm = modrm_get_ptr16(cpu);
 		alu_shl16(cpu, rm, count);
-		}
-		else {
-			uint8_t* rm = modrm_get_ptr8(cpu);
+	}
+	else {
+		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_shl8(cpu, rm, count);
 	}
 }
@@ -886,12 +949,12 @@ static void shr(I8086* cpu) {
 	if (cpu->opcode & 0x2) {
 		count = CL;
 	}
-		if (W) {
-			uint16_t* rm = modrm_get_ptr16(cpu);
+	if (W) {
+		uint16_t* rm = modrm_get_ptr16(cpu);
 		alu_shr16(cpu, rm, count);
-		}
-		else {
-			uint8_t* rm = modrm_get_ptr8(cpu);
+	}
+	else {
+		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_shr8(cpu, rm, count);
 	}
 }
@@ -901,92 +964,94 @@ static void sar(I8086* cpu) {
 	if (cpu->opcode & 0x2) {
 		count = CL;
 	}
-		if (W) {
-			uint16_t* rm = modrm_get_ptr16(cpu);
+	if (W) {
+		uint16_t* rm = modrm_get_ptr16(cpu);
 		alu_sar16(cpu, rm, count);
-		}
-		else {
-			uint8_t* rm = modrm_get_ptr8(cpu);
-		alu_sar8(cpu, rm, count);
-		}
 	}
+	else {
+		uint8_t* rm = modrm_get_ptr8(cpu);
+		alu_sar8(cpu, rm, count);
+	}
+}
 
 static void jcc(I8086* cpu) {
 	/* conditional jump(70-7F) b011XCCCC
 	   8086 cpu decode 60-6F the same as 70-7F */
 	int8_t offset = (int8_t)FETCH_BYTE();
 	switch (CCCC) {
-		case JCC_OVERFLOW:
+		case X86_JCC_JO:
 			if (OF) IP += offset;
 			break;
-		case JCC_NOT_OVERFLOW:
+		case X86_JCC_JNO:
 			if (!OF) IP += offset;
 			break;
-		case JCC_CARRY:
+		case X86_JCC_JC:
 			if (CF) IP += offset;
 			break;
-		case JCC_NOT_CARRY:
+		case X86_JCC_JNC:
 			if (!CF) IP += offset;
 			break;
-		case JCC_ZERO:
+		case X86_JCC_JZ:
 			if (ZF) IP += offset;
 			break;
-		case JCC_NOT_ZERO:
+		case X86_JCC_JNZ:
 			if (!ZF) IP += offset;
 			break;
-		case JCC_BELOW_OR_EQU:
+		case X86_JCC_JBE:
 			if (CF || ZF) IP += offset;
 			break;
-		case JCC_ABOVE:
+		case X86_JCC_JA:
 			if (!CF && !ZF) IP += offset;
 			break;
-		case JCC_SIGN:
+		case X86_JCC_JS:
 			if (SF) IP += offset;
 			break;
-		case JCC_NOT_SIGN:
+		case X86_JCC_JNS:
 			if (!SF) IP += offset;
 			break;
-		case JCC_PARITY:
+		case X86_JCC_JPE:
 			if (PF) IP += offset;
 			break;
-		case JCC_NOT_PARITY:
+		case X86_JCC_JPO:
 			if (!PF) IP += offset;
 			break;
-		case JCC_LESS:
+		case X86_JCC_JL:
 			if (SF != OF) IP += offset;
 			break;
-		case JCC_NOT_LESS:
+		case X86_JCC_JGE:
 			if (SF == OF) IP += offset;
 			break;
-		case JCC_LESS_OR_EQU:
+		case X86_JCC_JLE:
 			if (ZF || SF != OF) IP += offset;
 			break;
-		case JCC_NOT_LESS_OR_EQU:
+		case X86_JCC_JG:
 			if (!ZF && SF == OF) IP += offset;
 			break;
 	}
 }
-static void jmp_intra_direct(I8086* cpu) {
-	/* Jump near (E9) b11101001 */
-	int16_t imm = FETCH_WORD();
+
+static void jmp_intra_direct_short(I8086* cpu) {
+	/* Jump near short (EB) b11101011 */
+	int8_t imm = (int8_t)FETCH_BYTE();
 	IP += imm;
 }
+static void jmp_intra_direct(I8086* cpu) {
+	/* Jump near (E9) b11101001 */
+	int16_t imm = (int16_t)FETCH_WORD();
+	IP += imm;
+}
+static void jmp_intra_indirect(I8086* cpu) {
+	/* Jump intra indirect (FF, R/M reg = 100) b11111111 */	
+	uint16_t* rm = (uint16_t*)modrm_get_ptr16(cpu);
+	IP = *rm;
+}
+
 static void jmp_inter_direct(I8086* cpu) {
 	/* Jump addr:seg (EA) b11101010 */
 	uint16_t imm = FETCH_WORD();
 	uint16_t imm2 = FETCH_WORD();
 	IP = imm;
 	CS = imm2;
-}
-static void jmp_intra_direct_short(I8086* cpu) {
-	/* Jump near short (EB) b11101011 */
-	uint8_t imm = FETCH_BYTE();
-	IP += imm;
-}
-static void jmp_intra_indirect(I8086* cpu) {
-	/* Jump intra indirect (FF, R/M reg = 100) b11111111 */	
-	uint16_t* rm = modrm_get_ptr16(cpu);
-	IP += *rm; 
 }
 static void jmp_inter_indirect(I8086* cpu) {
 	/* Jump inter indirect (FF, R/M reg = 101) b11111111 */
@@ -997,10 +1062,17 @@ static void jmp_inter_indirect(I8086* cpu) {
 
 static void call_intra_direct(I8086* cpu) {
 	/* Call disp (E8) b11101000 */
-	uint16_t imm = FETCH_WORD();
+	int16_t imm = (int16_t)FETCH_WORD();
 	i8086_push_word(cpu, IP);
 	IP += imm;
 }
+static void call_intra_indirect(I8086* cpu) {
+	/* Call mem/reg (FF, R/M reg = 010) b11111111 */
+	i8086_push_word(cpu, IP);
+	uint16_t* rm = (uint16_t*)modrm_get_ptr16(cpu);
+	IP = *rm;
+}
+
 static void call_inter_direct(I8086* cpu) {
 	/* Call addr:seg (9A) b10011010 */
 	uint16_t imm = FETCH_WORD();
@@ -1009,12 +1081,6 @@ static void call_inter_direct(I8086* cpu) {
 	i8086_push_word(cpu, IP);
 	IP = imm;
 	CS = imm2;
-}
-static void call_intra_indirect(I8086* cpu) {
-	/* Call mem/reg (FF, R/M reg = 010) b11111111 */
-	i8086_push_word(cpu, IP);
-	uint16_t* rm = modrm_get_ptr16(cpu);
-	IP = *rm;
 }
 static void call_inter_indirect(I8086* cpu) {
 	/* Call mem (FF, R/M reg = 011) b11111111 */	
@@ -1096,7 +1162,7 @@ static void mov_rm_reg(I8086* cpu) {
 	}
 }
 static void mov_accum_mem(I8086* cpu) {
-	/* mov AL/AX, [addr] (A0/A1/A2/A3) b101000DW */
+	/* mov AL/AX, [mem] (A0/A1/A2/A3) b101000DW */
 	uint16_t addr = FETCH_WORD();
 	if (W) {
 		uint16_t* mem = GET_MEM_PTR(DATA_ADDR(addr));
@@ -1121,11 +1187,11 @@ static void mov_seg(I8086* cpu) {
 }
 
 static void lea(I8086* cpu) {
-	/* lea reg16, mem (8D) b10001101 */
+	/* lea reg16, [r/m] (8D) b10001101 */
 	cpu->modrm.byte = FETCH_BYTE();
 	uint16_t* reg = GET_REG16(cpu->modrm.reg);
-	uint16_t* mem = modrm_get_ptr16(cpu);
-	*reg = *mem;
+	uint16_t addr = modrm_get_addr(cpu);
+	*reg = addr;
 }
 
 static void not(I8086* cpu) {
@@ -1209,20 +1275,20 @@ static void idiv(I8086* cpu) {
 	}
 }
 
-#define REP_NONE     0
-#define REP_NOT_ZERO 1
-#define REP_ZERO     2
+#define REP_NONE     0xFF
+#define REP_NOT_ZERO 0
+#define REP_ZERO     1
 
 static int movs(I8086* cpu) {
 	/* movs (A4/A5) b1010010W */
 	if (W) {
 		uint16_t* src = GET_MEM_PTR(DATA_ADDR(SI));
-		uint16_t* dest = GET_MEM_PTR(DATA_ADDR(DI));
+		uint16_t* dest = GET_MEM_PTR(EXTRA_ADDR(DI));
 		*dest = *src;
 	}
 	else {
 		uint8_t* src = GET_MEM_PTR(DATA_ADDR(SI));
-		uint8_t* dest = GET_MEM_PTR(DATA_ADDR(DI));
+		uint8_t* dest = GET_MEM_PTR(EXTRA_ADDR(DI));
 		*dest = *src;
 	}
 
@@ -1236,32 +1302,22 @@ static int movs(I8086* cpu) {
 		DI -= (1 << W);
 	}
 
-	switch (cpu->rep_prefix) {
-
-		case REP_ZERO:
-			CX -= 1;
-			if (CX == 0)
-				return DECODE_REQ_CYCLE;
-			else
-				return DECODE_OK;
-
-		case REP_NOT_ZERO:
-			CX -= 1;
-			if (CX != 0)
-				return DECODE_REQ_CYCLE;
-			else
-				return DECODE_OK;
+	if (cpu->rep_prefix != 0xFF) {
+		CX -= 1;
+		if (CX > 0)
+			return DECODE_REQ_CYCLE;
+		else
+			return DECODE_OK;
 	}
 	return DECODE_OK;
 }
 static int stos(I8086* cpu) {
 	/* stos (AA/AB) b1010101W */
 	if (W) {
-		WRITE_WORD(DATA_ADDR(DI), AX);
+		WRITE_WORD(EXTRA_ADDR(DI), AX);
 	}
 	else {
-		WRITE_BYTE(DATA_ADDR(DI), AL);
-
+		WRITE_BYTE(EXTRA_ADDR(DI), AL);
 	}
 
 	if (DF) {
@@ -1272,20 +1328,12 @@ static int stos(I8086* cpu) {
 		DI += (1 << W);
 	}
 
-	switch (cpu->rep_prefix) {
-		case REP_ZERO:
-			CX -= 1;
-			if (CX == 0)
-				return DECODE_REQ_CYCLE;
-			else
-				return DECODE_OK;
-
-		case REP_NOT_ZERO:
-			CX -= 1;
-			if (CX != 0)
-				return DECODE_REQ_CYCLE;
-			else
-				return DECODE_OK;
+	if (cpu->rep_prefix != 0xFF) {
+		CX -= 1;
+		if (CX > 0)
+			return DECODE_REQ_CYCLE;
+		else
+			return DECODE_OK;
 	}
 	return DECODE_OK;
 }
@@ -1295,8 +1343,7 @@ static int lods(I8086* cpu) {
 		AX = READ_WORD(DATA_ADDR(SI));
 	}
 	else {
-		AL = READ_BYTE(DATA_ADDR(SI));
-		
+		AL = READ_BYTE(DATA_ADDR(SI));		
 	}
 
 	if (DF) {
@@ -1307,21 +1354,12 @@ static int lods(I8086* cpu) {
 		SI += (1 << W);
 	}
 
-	switch (cpu->rep_prefix) {
-		
-		case REP_ZERO:
-			CX -= 1;
-			if (CX == 0)
-				return DECODE_REQ_CYCLE;
-			else
-				return DECODE_OK;
-
-		case REP_NOT_ZERO:
-			CX -= 1;
-			if (CX != 0)
-				return DECODE_REQ_CYCLE;
-			else
-				return DECODE_OK;
+	if (cpu->rep_prefix != 0xFF) {
+		CX -= 1;
+		if (CX > 0)
+			return DECODE_REQ_CYCLE;
+		else
+			return DECODE_OK;
 	}
 	return DECODE_OK;
 }
@@ -1329,12 +1367,12 @@ static int cmps(I8086* cpu) {
 	/* cmps (A6/A7) b1010011W */
 	if (W) {
 		uint16_t* src = GET_MEM_PTR(DATA_ADDR(SI));
-		uint16_t* dest = GET_MEM_PTR(DATA_ADDR(DI));
+		uint16_t* dest = GET_MEM_PTR(EXTRA_ADDR(DI));
 		alu_cmp16(cpu, *src, *dest);
 	}
 	else {
 		uint8_t* src = GET_MEM_PTR(DATA_ADDR(SI));
-		uint8_t* dest = GET_MEM_PTR(DATA_ADDR(DI));
+		uint8_t* dest = GET_MEM_PTR(EXTRA_ADDR(DI));
 		alu_cmp8(cpu, *src, *dest);
 	}
 
@@ -1347,32 +1385,23 @@ static int cmps(I8086* cpu) {
 		DI += (1 << W);
 	}
 
-	switch (cpu->rep_prefix) {
-	
-		case REP_ZERO:
-			CX -= 1;
-			if (CX > 0 && ZF)
-				return DECODE_REQ_CYCLE;
-			else
-				return DECODE_OK;
-
-		case REP_NOT_ZERO:
-			CX -= 1;
-			if (CX > 0 && !ZF)
-				return DECODE_REQ_CYCLE;
-			else
-				return DECODE_OK;
+	if (cpu->rep_prefix != 0xFF) {
+		CX -= 1;
+		if (CX > 0 && ZF == cpu->rep_prefix)
+			return DECODE_REQ_CYCLE;
+		else
+			return DECODE_OK;
 	}
 	return DECODE_OK;
 }
 static int scas(I8086* cpu) {
 	/* scas (AE/AF) b1010111W */
 	if (W) {
-		uint16_t* mem = GET_MEM_PTR(DATA_ADDR(DI));
+		uint16_t* mem = GET_MEM_PTR(EXTRA_ADDR(DI));
 		alu_sub16(cpu, &AX, *mem);
 	}
 	else {
-		uint8_t* mem = GET_MEM_PTR(DATA_ADDR(DI));
+		uint8_t* mem = GET_MEM_PTR(EXTRA_ADDR(DI));
 		alu_sub8(cpu, &AL, *mem);
 	}
 
@@ -1384,21 +1413,12 @@ static int scas(I8086* cpu) {
 		DI += (1 << W);
 	}
 
-	switch (cpu->rep_prefix) {
-
-		case REP_ZERO:
-			CX -= 1;
-			if (CX > 0 && ZF)
-				return DECODE_REQ_CYCLE;
-			else
-				return DECODE_OK;
-
-		case REP_NOT_ZERO:
-			CX -= 1;
-			if (CX > 0 && !ZF)
-				return DECODE_REQ_CYCLE;
-			else
-				return DECODE_OK;
+	if (cpu->rep_prefix != 0xFF) {
+		CX -= 1;
+		if (CX > 0 && ZF == cpu->rep_prefix)
+			return DECODE_REQ_CYCLE;
+		else
+			return DECODE_OK;
 	}
 	return DECODE_OK;
 }
@@ -1424,6 +1444,19 @@ static void xlat(I8086* cpu) {
 	/* Get data pointed by BX + AL (D7) b11010111 */
 	uint8_t* mem = GET_MEM_PTR(DATA_ADDR(BX + AL));
 	AL = *mem;
+}
+
+static void esc(I8086* cpu) {
+	/* esc (D8-DF R/M reg = XXX) b11010REG */
+	cpu->modrm.byte = FETCH_BYTE();
+	if (cpu->modrm.mod != 0b11) {
+		uint8_t esc_opcode = ((cpu->opcode & 7) << 3) | cpu->modrm.reg;
+		uint16_t* reg = GET_REG16(cpu->opcode);
+		uint16_t* rm = modrm_get_ptr16(cpu);
+		(void)esc_opcode;
+		(void)reg;
+		(void)rm;
+	}
 }
 
 static void loopnz(I8086* cpu) {
@@ -1469,7 +1502,7 @@ static void in_accum_imm(I8086* cpu) {
 	}
 }
 static void out_accum_imm(I8086* cpu) {
-	/* out AL/AX, imm */
+	/* out imm, AL/AX */
 	uint8_t imm = FETCH_BYTE();
 	if (W) {
 		WRITE_IO_WORD(imm, AX);
@@ -1488,7 +1521,7 @@ static void in_accum_dx(I8086* cpu) {
 	}
 }
 static void out_accum_dx(I8086* cpu) {
-	/* out AL/AX DX */
+	/* out DX, AL/AX */
 	if (W) {
 		WRITE_IO_WORD(DX, AX);
 	}
@@ -1501,32 +1534,14 @@ static void int_(I8086* cpu) {
 	/* interrupt (CC/CD) b1100110V */
 	uint8_t type = 3;
  	if (cpu->opcode & 0x1) {
-		uint8_t imm = FETCH_BYTE();
-		type = imm * 4;
+		type = FETCH_BYTE();
 	}
-
-	i8086_push_word(cpu, cpu->status.word);
-	i8086_push_word(cpu, CS);
-	i8086_push_word(cpu, IP);
-	uint16_t cs = READ_WORD(DATA_ADDR(type + 2));
-	uint16_t ip = READ_WORD(DATA_ADDR(type));
-	CS = cs;
-	IP = ip;
-	IF = 0;
-	TF = 0;
+	i8086_int(cpu, type);
 }
 static void into(I8086* cpu) {
 	/* interrupt on overflow (CE) b11001110 */
 	if (OF) {
-		i8086_push_word(cpu, cpu->status.word);
-		i8086_push_word(cpu, CS);
-		i8086_push_word(cpu, IP);
-		uint16_t cs = READ_WORD(DATA_ADDR(0x10 + 2));
-		uint16_t ip = READ_WORD(DATA_ADDR(0x10));
-		CS = cs;
-		IP = ip;
-		IF = 0;
-		TF = 0;
+		i8086_int(cpu, 4);
 	}
 }
 static void iret(I8086* cpu) {
@@ -1536,15 +1551,10 @@ static void iret(I8086* cpu) {
 	i8086_pop_word(cpu, &cpu->status.word);
 }
 
-static int repnz(I8086* cpu) {
-	/* repnz (F2) b1111001Z */
-	cpu->rep_prefix = REP_NOT_ZERO;
-	cpu->opcode = FETCH_BYTE();
-	return DECODE_REQ_CYCLE;
-}
-static int repz(I8086* cpu) {
-	/* rep/repz (F3) b1111001Z */
-	cpu->rep_prefix = REP_ZERO;
+/* prefix byte */
+static int rep(I8086* cpu) {
+	/* rep/repz/repnz (F2/F3) b1111001Z */
+	cpu->rep_prefix = cpu->opcode & 0x1;
 	cpu->opcode = FETCH_BYTE();
 	return DECODE_REQ_CYCLE;
 }
@@ -1560,13 +1570,15 @@ static int lock(I8086* cpu) {
 	return DECODE_REQ_CYCLE;
 }
 
+/* Fetch next opcode */
 static void i8086_fetch(I8086* cpu) {
 	cpu->modrm.byte = 0;
 	cpu->segment_prefix = 0xFF;
-	cpu->rep_prefix = 0;
+	cpu->rep_prefix = 0xFF;
 	cpu->opcode = FETCH_BYTE();
 }
 
+/* decode opcode */
 static void i8086_decode_opcode_80(I8086* cpu) {
 	/* 0x80 - 0x83 b100000SW */
 	cpu->modrm.byte = FETCH_BYTE();
@@ -2062,6 +2074,16 @@ static int i8086_decode_opcode(I8086 * cpu) {
 		case 0xD7:
 			xlat(cpu);
 			break;
+		case 0xD8:
+		case 0xD9:
+		case 0xDA:
+		case 0xDB:
+		case 0xDC:
+		case 0xDD:
+		case 0xDE:
+		case 0xDF:
+			esc(cpu);
+			break;
 
 		case 0xE0:
 			loopnz(cpu);
@@ -2105,14 +2127,10 @@ static int i8086_decode_opcode(I8086 * cpu) {
 			break;
 
 		case 0xF0:
-			lock(cpu);
-			break;
+			return lock(cpu);
 		case 0xF2:
-			repnz(cpu);
-			break;
 		case 0xF3:
-			repz(cpu);
-			break;
+			return rep(cpu);
 		case 0xF4:
 			hlt(cpu);
 			break;
