@@ -811,15 +811,13 @@ static void rol(I8086* cpu) {
 	if (VW) {
 		count = CL;
 	}
-	for (int i = 0; i < count; ++i) {
 		if (W) {
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			alu_rol16(cpu, rm);
+		alu_rol16(cpu, rm, count);
 		}
 		else {
 			uint8_t* rm = modrm_get_ptr8(cpu);
-			alu_rol8(cpu, rm);
-		}
+		alu_rol8(cpu, rm, count);
 	}
 }
 static void ror(I8086* cpu) {
@@ -828,15 +826,13 @@ static void ror(I8086* cpu) {
 	if (VW) {
 		count = CL;
 	}
-	for (int i = 0; i < count; ++i) {
 		if (W) {
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			alu_ror16(cpu, rm);
+		alu_ror16(cpu, rm, count);
 		}
 		else {
 			uint8_t* rm = modrm_get_ptr8(cpu);
-			alu_ror8(cpu, rm);
-		}
+		alu_ror8(cpu, rm, count);
 	}
 }
 static void rcl(I8086* cpu) {
@@ -845,15 +841,13 @@ static void rcl(I8086* cpu) {
 	if (VW) {
 		count = CL;
 	}
-	for (int i = 0; i < count; ++i) {
 		if (W) {
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			alu_rcl16(cpu, rm);
+		alu_rcl16(cpu, rm, count);
 		}
 		else {
 			uint8_t* rm = modrm_get_ptr8(cpu);
-			alu_rcl8(cpu, rm);
-		}
+		alu_rcl8(cpu, rm, count);
 	}
 }
 static void rcr(I8086* cpu) {
@@ -862,32 +856,28 @@ static void rcr(I8086* cpu) {
 	if (VW) {
 		count = CL;
 	}
-	for (int i = 0; i < count; ++i) {
 		if (W) {
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			alu_rcr16(cpu, rm);
+		alu_rcr16(cpu, rm, count);
 		}
 		else {
 			uint8_t* rm = modrm_get_ptr8(cpu);
-			alu_rcr8(cpu, rm);
+		alu_rcr8(cpu, rm, count);
 		}
 	}
-}
 static void shl(I8086* cpu) {
 	/* Shift left (D0/D1/D2/D3, R/M reg = 100) b110100VW */
 	uint8_t count = 1;
 	if (VW) {
 		count = CL;
 	}
-	for (int i = 0; i < count; ++i) {
 		if (W) {
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			alu_shl16(cpu, rm);
+		alu_shl16(cpu, rm, count);
 		}
 		else {
 			uint8_t* rm = modrm_get_ptr8(cpu);
-			alu_shl8(cpu, rm);
-		}
+		alu_shl8(cpu, rm, count);
 	}
 }
 static void shr(I8086* cpu) {
@@ -896,15 +886,13 @@ static void shr(I8086* cpu) {
 	if (cpu->opcode & 0x2) {
 		count = CL;
 	}
-	for (int i = 0; i < count; ++i) {
 		if (W) {
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			alu_shr16(cpu, rm);
+		alu_shr16(cpu, rm, count);
 		}
 		else {
 			uint8_t* rm = modrm_get_ptr8(cpu);
-			alu_shr8(cpu, rm);
-		}
+		alu_shr8(cpu, rm, count);
 	}
 }
 static void sar(I8086* cpu) {
@@ -913,17 +901,15 @@ static void sar(I8086* cpu) {
 	if (cpu->opcode & 0x2) {
 		count = CL;
 	}
-	for (int i = 0; i < count; ++i) {
 		if (W) {
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			alu_sar16(cpu, rm);
+		alu_sar16(cpu, rm, count);
 		}
 		else {
 			uint8_t* rm = modrm_get_ptr8(cpu);
-			alu_sar8(cpu, rm);
+		alu_sar8(cpu, rm, count);
 		}
 	}
-}
 
 static void jcc(I8086* cpu) {
 	/* conditional jump(70-7F) b011XCCCC
