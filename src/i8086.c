@@ -1,5 +1,5 @@
 /* i8086.c
- * tommojphillips 2025 ( https://github.com/tommojphillips/ )
+ * Thomas J. Armytage 2025 ( https://github.com/tommojphillips/ )
  * Intel 8086 CPU
  */
 
