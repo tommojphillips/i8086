@@ -91,7 +91,7 @@ static uint20_t modrm_get_effective_base_address(I8086* cpu) {
 	}
 	return 0;
 }
-static uint16_t modrm_get_addr(I8086* cpu) {
+static uint16_t modrm_get_address(I8086* cpu) {
 	// Get 16bit address
 	uint16_t addr = 0;
 	switch (cpu->modrm.mod) {
@@ -119,7 +119,7 @@ static uint16_t modrm_get_addr(I8086* cpu) {
 	}
 	return addr;
 }
-static uint20_t modrm_get_effective_addr(I8086* cpu) {
+static uint20_t modrm_get_effective_address(I8086* cpu) {
 	// Get 20bit effective address
 	uint20_t addr = 0;
 	switch (cpu->modrm.mod) {
@@ -148,22 +148,22 @@ static uint20_t modrm_get_effective_addr(I8086* cpu) {
 	}
 	return addr;
 }
-uint16_t* modrm_get_ptr16(I8086* cpu) {
+static uint16_t* modrm_get_ptr16(I8086* cpu) {
 	// Get R/M pointer to 16bit value
 	if (cpu->modrm.mod == 0b11) {
 		return GET_REG16(cpu->modrm.rm);
 	}
 	else {
-		return GET_MEM_PTR(modrm_get_effective_addr(cpu));
+		return GET_MEM_PTR(modrm_get_effective_address(cpu));
 	}
 }
-uint8_t* modrm_get_ptr8(I8086* cpu) {
+static uint8_t* modrm_get_ptr8(I8086* cpu) {
 	// Get R/M pointer to 8bit value
 	if (cpu->modrm.mod == 0b11) {
 		return GET_REG8(cpu->modrm.rm);
 	}
 	else {
-		return GET_MEM_PTR(modrm_get_effective_addr(cpu));
+		return GET_MEM_PTR(modrm_get_effective_address(cpu));
 	}
 }
 
@@ -702,11 +702,11 @@ static void salc(I8086* cpu) {
 
 static void inc_reg(I8086* cpu) {
 	/* Inc reg16 (40-47) b01000REG */
-	alu_inc16(cpu, GET_REG16(cpu->opcode & 7));
+	alu_inc16(cpu, GET_REG16(cpu->opcode));
 }
 static void dec_reg(I8086* cpu) {
 	/* Dec reg16 (48-4F) b01001REG */
-	alu_dec16(cpu, GET_REG16(cpu->opcode & 7));
+	alu_dec16(cpu, GET_REG16(cpu->opcode));
 }
 
 static void push_seg(I8086* cpu) {
@@ -719,7 +719,7 @@ static void pop_seg(I8086* cpu) {
 }
 static void push_reg(I8086* cpu) {
 	/* Push reg16 (50-57) b01010REG */
-	i8086_push_word(cpu, *GET_REG16(cpu->opcode));
+	i8086_push_word(cpu, cpu->registers[cpu->opcode & 7].r16);
 }
 static void pop_reg(I8086* cpu) {
 	/* Pop reg16 (58-5F) b01011REG */
@@ -1190,7 +1190,7 @@ static void lea(I8086* cpu) {
 	/* lea reg16, [r/m] (8D) b10001101 */
 	cpu->modrm.byte = FETCH_BYTE();
 	uint16_t* reg = GET_REG16(cpu->modrm.reg);
-	uint16_t addr = modrm_get_addr(cpu);
+	uint16_t addr = modrm_get_address(cpu);
 	*reg = addr;
 }
 

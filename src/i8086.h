@@ -43,32 +43,33 @@
 
 #define IP cpu->ip
 
-#define AL cpu->registers[REG_AL].l // accum low byte 8bit register
-#define AH cpu->registers[REG_AL].h // accum high byte 8bit register
-#define AX cpu->registers[REG_AX].r16  // accum 16bit register
+#define AL cpu->registers[REG_AL].l   // accum low byte 8bit register
+#define AH cpu->registers[REG_AL].h   // accum high byte 8bit register
+#define AX cpu->registers[REG_AX].r16 // accum 16bit register
 
-#define CL cpu->registers[REG_CL].l // count low byte 8bit register
-#define CH cpu->registers[REG_CL].h // count high byte 8bit register
-#define CX cpu->registers[REG_CX].r16  // count 16bit register
+#define CL cpu->registers[REG_CL].l   // count low byte 8bit register
+#define CH cpu->registers[REG_CL].h   // count high byte 8bit register
+#define CX cpu->registers[REG_CX].r16 // count 16bit register
 
-#define DL cpu->registers[REG_DL].l // data low byte 8bit register
-#define DH cpu->registers[REG_DL].h // data high byte 8bit register
-#define DX cpu->registers[REG_DX].r16  // data 16bit register
+#define DL cpu->registers[REG_DL].l   // data low byte 8bit register
+#define DH cpu->registers[REG_DL].h   // data high byte 8bit register
+#define DX cpu->registers[REG_DX].r16 // data 16bit register
 
-#define BL cpu->registers[REG_BL].l // base low byte 8bit register
-#define BH cpu->registers[REG_BL].h // base high byte 8bit register
-#define BX cpu->registers[REG_BX].r16  // base 16bit register
+#define BL cpu->registers[REG_BL].l   // base low byte 8bit register
+#define BH cpu->registers[REG_BL].h   // base high byte 8bit register
+#define BX cpu->registers[REG_BX].r16 // base 16bit register
 
 #define SP cpu->registers[REG_SP].r16 // stack pointer 16bit register
 #define BP cpu->registers[REG_BP].r16 // base pointer 16bit register
 #define SI cpu->registers[REG_SI].r16 // src index 16bit register
 #define DI cpu->registers[REG_DI].r16 // dest index 16bit register
-#define ES cpu->segments[SEG_ES] // Extra segment register
-#define CS cpu->segments[SEG_CS] // Code segment register
-#define SS cpu->segments[SEG_SS] // Stack segment register
-#define DS cpu->segments[SEG_DS] // Data segment register
+
+#define ES cpu->segments[SEG_ES] // extra segment register
+#define CS cpu->segments[SEG_CS] // code segment register
+#define SS cpu->segments[SEG_SS] // stack segment register
+#define DS cpu->segments[SEG_DS] // data segment register
  
- // byte/word operation. 0 = byte; 1 = word
+// byte/word operation. 0 = byte; 1 = word
 #define W (cpu->opcode & 0x1)
 
 // byte/word operation. 0 = byte; 1 = word
