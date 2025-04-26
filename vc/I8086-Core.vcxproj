@@ -127,14 +127,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="..\src\alu.h" />
     <ClInclude Include="..\src\i8086.h" />
+    <ClInclude Include="..\src\i8086_alu.h" />
     <ClInclude Include="..\src\i8086_mnem.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\src\alu.c" />
     <ClCompile Include="..\src\i8086 _mnem.c" />
     <ClCompile Include="..\src\i8086.c" />
+    <ClCompile Include="..\src\i8086_alu.c" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

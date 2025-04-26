@@ -18,10 +18,10 @@
     <ClInclude Include="..\src\i8086.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\src\alu.h">
+    <ClInclude Include="..\src\i8086_mnem.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\src\i8086_mnem.h">
+    <ClInclude Include="..\src\i8086_alu.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -29,10 +29,10 @@
     <ClCompile Include="..\src\i8086.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\alu.c">
+    <ClCompile Include="..\src\i8086 _mnem.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\i8086 _mnem.c">
+    <ClCompile Include="..\src\i8086_alu.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

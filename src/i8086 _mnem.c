@@ -10,36 +10,56 @@
 #include "i8086.h"
 #include "i8086_mnem.h"
 
- /* re-define IP as counter */
-#undef IP
+ /* define IP as counter */
 #define IP  cpu->counter
 
 /* Get segment override prefix */
-#undef GET_SEG
 #define GET_SEG(seg)       ((cpu->state->segment_prefix != 0xFF) ? cpu->state->segment_prefix : seg)
 
 /* Get 20bit address SEG:ADDR */
-#undef GET_ADDR
 #define GET_ADDR(seg, addr) (((cpu->state->segments[seg] << 4) + addr) & 0xFFFFF)
 
  /* Get 20bit code segment address CS:ADDR */
 #define IP_ADDR            GET_ADDR(SEG_CS, IP)
 
 /* Fetch word at CS:IP. Inc IP by 2 */
-#undef FETCH_BYTE
-#define FETCH_BYTE()       cpu->state->mm.funcs.read_mem_byte(cpu->state->mm.mem, IP_ADDR); IP += 1
+#define FETCH_BYTE()       cpu->state->funcs.read_mem_byte(IP_ADDR); IP += 1
 
 /* Fetch word at CS:IP. Inc IP by 2 */
-#undef FETCH_WORD
-#define FETCH_WORD()       cpu->state->mm.funcs.read_mem_word(cpu->state->mm.mem, IP_ADDR); IP += 2
+#define FETCH_WORD()       cpu->state->funcs.read_mem_word(IP_ADDR); IP += 2
 
 /* Get 8bit register mnemonic */
-#undef GET_REG8
 #define GET_REG8(reg)      reg8_mnem[reg & 7]
 
 /* Get 16bit register mnemonic */
-#undef GET_REG16
 #define GET_REG16(reg)     reg16_mnem[reg & 7]
+
+ // byte/word operation. 0 = byte; 1 = word
+#define W (cpu->opcode & 0x1)
+
+// byte/word operation. 0 = byte; 1 = word
+#define WREG (cpu->opcode & 0x8) 
+
+// byte/word operation. b00 = byte; b01 = word; b11 = byte sign extended to word
+#define SW (cpu->opcode & 0x3)
+
+// seg register
+#define SR ((cpu->opcode >> 0x3) & 0x3)
+
+// 0 = (count = 1); 1 = (count = CL)
+#define VW (cpu->opcode & 0x2)
+
+// register direction (reg -> r/m) or (r/m -> reg)
+#define D (cpu->opcode & 0x2) 
+
+// jump condition
+#define CCCC (cpu->opcode & 0x0F)
+
+#define LABEL_OFFSET(x) (IP+x)
+//#define LABEL_OFFSET(x) (x)
+
+#define MNEM_F(mem, x, ...) sprintf(mem+strlen(mem), x, __VA_ARGS__)
+#define MNEM(x, ...) MNEM_F(cpu->mnem, x, __VA_ARGS__)
 
 static const char* reg8_mnem[] = {
 	"al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"
@@ -52,12 +72,6 @@ static const char* seg_mnem[] = {
 	"es", "cs", "ss", "ds"
 };
 
-#define LABEL_OFFSET(x) (IP+x)
-//#define LABEL_OFFSET(x) (x)
-
-#define MNEM_F(mem, x, ...) sprintf(mem+strlen(mem), x, __VA_ARGS__)
-#define MNEM(x, ...) MNEM_F(cpu->mnem, x, __VA_ARGS__)
-
 /* Swap pointers if 'D' is set bXXXXXXDX */
 static void get_direction(I8086_MNEM* cpu, void** ptr1, void** ptr2) {
 	if (D) {
@@ -67,7 +81,7 @@ static void get_direction(I8086_MNEM* cpu, void** ptr1, void** ptr2) {
 	}
 }
 
-static void get_base_address(I8086_MNEM* cpu, char* t) {
+static void get_base_mnem(I8086_MNEM* cpu, char* t) {
 	switch (cpu->modrm.rm) {
 		case 0b000: // base rel indexed - BX + SI
 			MNEM_F(t, "BX + SI");
@@ -108,7 +122,7 @@ static void modrm_get_mnem(I8086_MNEM* cpu) {
 			}
 			else {
 				// register mode - [ base16 ]
-				get_base_address(cpu, t);
+				get_base_mnem(cpu, t);
 				MNEM_F(cpu->addressing_str, "[%s]", t);
 			}
 			break;
@@ -116,14 +130,14 @@ static void modrm_get_mnem(I8086_MNEM* cpu) {
 		case 0b01: {
 			// memory mode; 8bit displacement - [ base16 + disp8 ]
 			uint8_t imm = FETCH_BYTE();
-			get_base_address(cpu, t);
+			get_base_mnem(cpu, t);
 			MNEM_F(cpu->addressing_str, "[%s + %02X]", t, imm);
 		} break;
 
 		case 0b10: {
 			// memory mode; 16bit displacement - [ base16 + disp16 ]
 			uint16_t imm = FETCH_WORD();
-			get_base_address(cpu, t);
+			get_base_mnem(cpu, t);
 			MNEM_F(cpu->addressing_str, "[%s + %04X]", t, imm);
 		} break;
 	}
@@ -1347,19 +1361,19 @@ static int rep(I8086_MNEM* cpu) {
 		MNEM("repnz ");
 	}
 	cpu->opcode = FETCH_BYTE();
-	return DECODE_REQ_CYCLE;
+	return I8086_DECODE_REQ_CYCLE;
 }
 static int segment_override(I8086_MNEM* cpu) {
 	/* (26/2E/36/3E) b001SR110 */
 	MNEM("%s: ", seg_mnem[SR]);
 	cpu->opcode = FETCH_BYTE();
-	return DECODE_REQ_CYCLE;
+	return I8086_DECODE_REQ_CYCLE;
 }
 static int lock(I8086_MNEM* cpu) {
 	/* lock the bus (F0) b11110000 */
 	MNEM("lock ");
 	cpu->opcode = FETCH_BYTE();
-	return DECODE_REQ_CYCLE;
+	return I8086_DECODE_REQ_CYCLE;
 }
 
 static void i8086_fetch(I8086_MNEM* cpu) {
@@ -1962,9 +1976,9 @@ static int i8086_decode_opcode(I8086_MNEM* cpu) {
 			i8086_decode_opcode_fe(cpu);
 			break;
 		default:
-			return DECODE_UNDEFINED;
+			return I8086_DECODE_UNDEFINED;
 	}
-	return DECODE_OK;
+	return I8086_DECODE_OK;
 }
 
 int i8086_mnem(I8086_MNEM* mnem) {
@@ -1972,9 +1986,9 @@ int i8086_mnem(I8086_MNEM* mnem) {
 	int r = 0;
 	do {
 		r = i8086_decode_opcode(mnem);
-	} while (r == DECODE_REQ_CYCLE);
+	} while (r == I8086_DECODE_REQ_CYCLE);
 
-	if (r == DECODE_UNDEFINED) {
+	if (r == I8086_DECODE_UNDEFINED) {
 		sprintf(mnem->mnem, "undefined");
 	}
 	return r;

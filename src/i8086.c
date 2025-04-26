@@ -6,7 +6,125 @@
 #include <stdint.h>
 
 #include "i8086.h"
-#include "alu.h"
+#include "i8086_alu.h"
+
+#define PSW cpu->status.word
+
+#define SF cpu->status.sf
+#define CF cpu->status.cf
+#define ZF cpu->status.zf
+#define PF cpu->status.pf
+#define OF cpu->status.of
+#define AF cpu->status.af
+#define DF cpu->status.df
+#define TF cpu->status.tf
+#define IF cpu->status.in
+
+#define IP cpu->ip
+
+#define AL cpu->registers[REG_AL].l   // accum low byte 8bit register
+#define AH cpu->registers[REG_AL].h   // accum high byte 8bit register
+#define AX cpu->registers[REG_AX].r16 // accum 16bit register
+
+#define CL cpu->registers[REG_CL].l   // count low byte 8bit register
+#define CH cpu->registers[REG_CL].h   // count high byte 8bit register
+#define CX cpu->registers[REG_CX].r16 // count 16bit register
+
+#define DL cpu->registers[REG_DL].l   // data low byte 8bit register
+#define DH cpu->registers[REG_DL].h   // data high byte 8bit register
+#define DX cpu->registers[REG_DX].r16 // data 16bit register
+
+#define BL cpu->registers[REG_BL].l   // base low byte 8bit register
+#define BH cpu->registers[REG_BL].h   // base high byte 8bit register
+#define BX cpu->registers[REG_BX].r16 // base 16bit register
+
+#define SP cpu->registers[REG_SP].r16 // stack pointer 16bit register
+#define BP cpu->registers[REG_BP].r16 // base pointer 16bit register
+#define SI cpu->registers[REG_SI].r16 // src index 16bit register
+#define DI cpu->registers[REG_DI].r16 // dest index 16bit register
+
+#define ES cpu->segments[SEG_ES] // extra segment register
+#define CS cpu->segments[SEG_CS] // code segment register
+#define SS cpu->segments[SEG_SS] // stack segment register
+#define DS cpu->segments[SEG_DS] // data segment register
+
+ // byte/word operation. 0 = byte; 1 = word
+#define W (cpu->opcode & 0x1)
+
+// byte/word operation. 0 = byte; 1 = word
+#define WREG (cpu->opcode & 0x8) 
+
+// byte/word operation. b00 = byte; b01 = word; b11 = byte sign extended to word
+#define SW (cpu->opcode & 0x3)
+
+// seg register
+#define SR ((cpu->opcode >> 0x3) & 0x3)
+
+// 0 = (count = 1); 1 = (count = CL)
+#define VW (cpu->opcode & 0x2)
+
+// register direction (reg -> r/m) or (r/m -> reg)
+#define D (cpu->opcode & 0x2) 
+
+// jump condition
+#define CCCC (cpu->opcode & 0x0F)
+
+/* Get segment override prefix */
+#define GET_SEG(seg) ((cpu->segment_prefix != 0xFF) ? cpu->segment_prefix : seg)
+
+/* Get 20bit address SEG:ADDR */
+#define GET_ADDR(seg, addr) (((cpu->segments[seg] << 4) + addr) & 0xFFFFF)
+
+/* Get 20bit code segment address CS:ADDR */
+#define IP_ADDR            GET_ADDR(SEG_CS, IP)
+
+/* Get 20bit stack segment address SS:ADDR */
+#define STACK_ADDR(addr)   GET_ADDR(GET_SEG(SEG_SS), addr)
+
+/* Get 20bit data segment address DS:ADDR */
+#define DATA_ADDR(addr)    GET_ADDR(GET_SEG(SEG_DS), addr)
+
+/* Get 20bit extra segment address ES:ADDR */
+#define EXTRA_ADDR(addr)   GET_ADDR(GET_SEG(SEG_ES), addr)
+
+/* Read byte from [addr] */
+#define READ_BYTE(addr)        cpu->funcs.read_mem_byte(addr)
+
+/* Write byte to [addr] */
+#define WRITE_BYTE(addr,value) cpu->funcs.write_mem_byte(addr,value)
+
+/* Fetch byte at CS:IP. Inc IP by 1 */
+#define FETCH_BYTE()           cpu->funcs.read_mem_byte(IP_ADDR); IP += 1
+
+/* read word from [addr] */
+#define READ_WORD(addr)        cpu->funcs.read_mem_word(addr)
+
+/* write word to [addr] */
+#define WRITE_WORD(addr,value) cpu->funcs.write_mem_word(addr,value)
+
+/* Fetch word at CS:IP. Inc IP by 2 */
+#define FETCH_WORD()           cpu->funcs.read_mem_word(IP_ADDR); IP += 2
+
+/* Read byte from IO port word */
+#define READ_IO_WORD(port)     cpu->funcs.read_io_word(port)
+
+/* Read byte from IO port */
+#define READ_IO(port)          cpu->funcs.read_io_byte(port)
+
+/* Write byte to IO port */
+#define WRITE_IO_WORD(port,value) cpu->funcs.write_io_word(port, value)
+
+/* Write byte to IO port */
+#define WRITE_IO(port,value)   cpu->funcs.write_io_byte(port, value)
+
+/* Get memory pointer */
+#define GET_MEM_PTR(addr)      cpu->funcs.get_mem_ptr(addr)
+
+/* Get 8bit register ptr */
+#define GET_REG8(reg)          (&cpu->registers[reg & 3].l + ((reg & 7) >> 2))
+
+/* Get 16bit register ptr */
+#define GET_REG16(reg)         (&cpu->registers[reg & 7].r16)
 
 void i8086_push_byte(I8086* cpu, uint8_t value) {
 	SP -= 1;
@@ -26,7 +144,7 @@ void i8086_pop_word(I8086* cpu, uint16_t* value) {
 }
 
 void i8086_int(I8086* cpu, uint8_t type) {
-	i8086_push_word(cpu, cpu->status.word);
+	i8086_push_word(cpu, PSW);
 	i8086_push_word(cpu, CS);
 	i8086_push_word(cpu, IP);
 	uint20_t addr = type * 4;
@@ -610,85 +728,29 @@ static void test_accum_imm(I8086* cpu) {
 
 static void daa(I8086* cpu) {
 	/* Decimal Adjust for Addition (27) b00100111 */
-	uint8_t correction = 0;
-	if ((AL & 0x0F) > 9 || AF) {
-		correction |= 6;
-		AF = 1;
-	}
-
-	if (AL > 0x9F || CF) {
-		correction |= 0x60;
-		CF = 1;
-	}
-
-	alu_add8(cpu, &AL, correction);
+	alu_daa(cpu, &AL);
 }
 static void das(I8086* cpu) {
 	/* Decimal Adjust for Subtraction (2F) b00101111 */
-	uint8_t correction = 0;
-	if ((AL & 0x0F) > 9 || AF) {
-		correction |= 6;
-		AF = 1;
-	}
-
-	if (AL > 0x9F || CF) {
-		correction |= 0x60;
-		CF = 1;
-	}
-
-	alu_sub8(cpu, &AL, correction);
+	alu_das(cpu, &AL);
 }
 static void aaa(I8086* cpu) {
 	/* ASCII Adjust for Addition (37) b00110111 */
-	if ((AL & 0x0F) > 9 || AF) {
-		AL += 6;
-		AH += 1;
-		AF = 1;
-		CF = 1;
-	}
-	else {
-		AF = 0;
-		CF = 0;
-	}
-	AL &= 0x0F;
+	alu_aaa(cpu, &AL, &AH);
 }
 static void aas(I8086* cpu) {
 	/* ASCII Adjust for Subtraction (3F) b00111111 */
-	if ((AL & 0x0F) > 9 || AF) {
-		AL -= 6;
-		AH -= 1;
-		AF = 1;
-		CF = 1;
-	}
-	else {
-		AF = 0;
-		CF = 0;
-	}
-	AL &= 0x0F;
+	alu_aas(cpu, &AL, &AH);
 }
 static void aam(I8086* cpu) {
 	/* ASCII Adjust for Multiply (D4 0A) b11010100 00001010 */
 	uint8_t divisor = FETCH_BYTE(); // undocumented operand; normally 0x0A
-	AH = (AL / divisor);
-	AL = (AL % divisor);
-
-	SET_CF8(AH);
-	SET_OF8(AH);
-	SET_PF8(AL);
-	SET_SF8(AL);
-	SET_ZF(AL);
+	alu_aam(cpu, &AL, &AH, divisor);
 }
 static void aad(I8086* cpu) {
 	/* ASCII Adjust for Division (D5 0A) b11010101 00001010 */
 	uint8_t divisor = FETCH_BYTE(); // undocumented operand; normally 0x0A
-	AL = (AH * divisor) + AL;
-	AH = 0;
-
-	SET_CF8(AL);
-	SET_OF8(AL);
-	SET_PF8(AL);
-	SET_SF8(AL);
-	SET_ZF(AL);
+	alu_aad(cpu, &AL, &AH, divisor);
 }
 static void salc(I8086* cpu) {
 	/* set carry in AL (D6) b11010110 undocumented opcode */
@@ -737,13 +799,13 @@ static void pop_rm(I8086* cpu) {
 }
 static void pushf(I8086* cpu) {
 	/* push psw (9C) b10011100 */
-	cpu->status.word &= 0x7D5;
-	i8086_push_word(cpu, cpu->status.word);
+	PSW &= 0x7D5;
+	i8086_push_word(cpu, PSW);
 }
 static void popf(I8086* cpu) {
 	/* pop psw (9D) b10011101 */
-	i8086_pop_word(cpu, &cpu->status.word);
-	cpu->status.word &= 0x7D5;
+	i8086_pop_word(cpu, &PSW);
+	PSW &= 0x7D5;
 }
 
 static void nop(I8086* cpu) {
@@ -804,12 +866,12 @@ static void wait(I8086* cpu) {
 
 static void sahf(I8086* cpu) {
 	/* Store AH into flags (9E) b10011110 */
-	cpu->status.word &= 0xFF00;
-	cpu->status.word |= AH & 0xD5;
+	PSW &= 0xFF00;
+	PSW |= AH & 0xD5;
 }
 static void lahf(I8086* cpu) {
 	/* Load flags into AH (9F) b10011111 */
-	AH = cpu->status.word & 0xD5;
+	AH = PSW & 0xD5;
 }
 
 static void hlt(I8086* cpu) {
@@ -1031,23 +1093,23 @@ static void jcc(I8086* cpu) {
 }
 
 static void jmp_intra_direct_short(I8086* cpu) {
-	/* Jump near short (EB) b11101011 */
+	/* Jump short imm8 (EB) b11101011 */
 	int8_t imm = (int8_t)FETCH_BYTE();
 	IP += imm;
 }
 static void jmp_intra_direct(I8086* cpu) {
-	/* Jump near (E9) b11101001 */
+	/* Jump near  imm16 (E9) b11101001 */
 	int16_t imm = (int16_t)FETCH_WORD();
 	IP += imm;
 }
 static void jmp_intra_indirect(I8086* cpu) {
-	/* Jump intra indirect (FF, R/M reg = 100) b11111111 */	
+	/* Jump near indirect (FF, R/M reg = 100) b11111111 */	
 	uint16_t* rm = (uint16_t*)modrm_get_ptr16(cpu);
 	IP = *rm;
 }
 
 static void jmp_inter_direct(I8086* cpu) {
-	/* Jump addr:seg (EA) b11101010 */
+	/* Jump far addr:seg (EA) b11101010 */
 	uint16_t imm = FETCH_WORD();
 	uint16_t imm2 = FETCH_WORD();
 	IP = imm;
@@ -1293,23 +1355,21 @@ static int movs(I8086* cpu) {
 	}
 
 	if (DF) {
-		SI += (1 << W);
-		DI += (1 << W);
-
-	}
-	else {
 		SI -= (1 << W);
 		DI -= (1 << W);
+	}
+	else {
+		SI += (1 << W);
+		DI += (1 << W);
 	}
 
 	if (cpu->rep_prefix != 0xFF) {
 		CX -= 1;
-		if (CX > 0)
-			return DECODE_REQ_CYCLE;
-		else
-			return DECODE_OK;
+		if (CX > 0) {
+			return I8086_DECODE_REQ_CYCLE;
+		}
 	}
-	return DECODE_OK;
+	return I8086_DECODE_OK;
 }
 static int stos(I8086* cpu) {
 	/* stos (AA/AB) b1010101W */
@@ -1322,7 +1382,6 @@ static int stos(I8086* cpu) {
 
 	if (DF) {
 		DI -= (1 << W);
-
 	}
 	else {
 		DI += (1 << W);
@@ -1330,12 +1389,11 @@ static int stos(I8086* cpu) {
 
 	if (cpu->rep_prefix != 0xFF) {
 		CX -= 1;
-		if (CX > 0)
-			return DECODE_REQ_CYCLE;
-		else
-			return DECODE_OK;
+		if (CX > 0) {
+			return I8086_DECODE_REQ_CYCLE;
+		}
 	}
-	return DECODE_OK;
+	return I8086_DECODE_OK;
 }
 static int lods(I8086* cpu) {
 	/* lods (AC/AD) b1010110W */
@@ -1348,7 +1406,6 @@ static int lods(I8086* cpu) {
 
 	if (DF) {
 		SI -= (1 << W);
-
 	}
 	else {
 		SI += (1 << W);
@@ -1356,12 +1413,11 @@ static int lods(I8086* cpu) {
 
 	if (cpu->rep_prefix != 0xFF) {
 		CX -= 1;
-		if (CX > 0)
-			return DECODE_REQ_CYCLE;
-		else
-			return DECODE_OK;
+		if (CX > 0) {
+			return I8086_DECODE_REQ_CYCLE;
+		}
 	}
-	return DECODE_OK;
+	return I8086_DECODE_OK;
 }
 static int cmps(I8086* cpu) {
 	/* cmps (A6/A7) b1010011W */
@@ -1387,12 +1443,11 @@ static int cmps(I8086* cpu) {
 
 	if (cpu->rep_prefix != 0xFF) {
 		CX -= 1;
-		if (CX > 0 && ZF == cpu->rep_prefix)
-			return DECODE_REQ_CYCLE;
-		else
-			return DECODE_OK;
+		if (CX > 0 && ZF == cpu->rep_prefix) {
+			return I8086_DECODE_REQ_CYCLE;
+		}
 	}
-	return DECODE_OK;
+	return I8086_DECODE_OK;
 }
 static int scas(I8086* cpu) {
 	/* scas (AE/AF) b1010111W */
@@ -1407,7 +1462,6 @@ static int scas(I8086* cpu) {
 
 	if (DF) {
 		DI -= (1 << W);
-
 	}
 	else {
 		DI += (1 << W);
@@ -1415,12 +1469,11 @@ static int scas(I8086* cpu) {
 
 	if (cpu->rep_prefix != 0xFF) {
 		CX -= 1;
-		if (CX > 0 && ZF == cpu->rep_prefix)
-			return DECODE_REQ_CYCLE;
-		else
-			return DECODE_OK;
+		if (CX > 0 && ZF == cpu->rep_prefix) {
+			return I8086_DECODE_REQ_CYCLE;
+		}
 	}
-	return DECODE_OK;
+	return I8086_DECODE_OK;
 }
 
 static void les(I8086* cpu) {
@@ -1548,7 +1601,7 @@ static void iret(I8086* cpu) {
 	/* interrupt on return (CF) b11001111 */
 	i8086_pop_word(cpu, &IP);
 	i8086_pop_word(cpu, &CS);
-	i8086_pop_word(cpu, &cpu->status.word);
+	i8086_pop_word(cpu, &PSW);
 }
 
 /* prefix byte */
@@ -1556,18 +1609,18 @@ static int rep(I8086* cpu) {
 	/* rep/repz/repnz (F2/F3) b1111001Z */
 	cpu->rep_prefix = cpu->opcode & 0x1;
 	cpu->opcode = FETCH_BYTE();
-	return DECODE_REQ_CYCLE;
+	return I8086_DECODE_REQ_CYCLE;
 }
 static int segment_override(I8086* cpu) {
 	/* (26/2E/36/3E) b001SR110 */
 	cpu->segment_prefix = SR;
 	cpu->opcode = FETCH_BYTE();
-	return DECODE_REQ_CYCLE;
+	return I8086_DECODE_REQ_CYCLE;
 }
 static int lock(I8086* cpu) {
 	/* lock the bus (F0) b11110000 */
 	cpu->opcode = FETCH_BYTE();
-	return DECODE_REQ_CYCLE;
+	return I8086_DECODE_REQ_CYCLE;
 }
 
 /* Fetch next opcode */
@@ -2163,35 +2216,36 @@ static int i8086_decode_opcode(I8086 * cpu) {
 		case 0xFF:
 			i8086_decode_opcode_fe(cpu);
 			break;
+		default:
+			return I8086_DECODE_UNDEFINED;
 	}
-	return DECODE_OK;
+	return I8086_DECODE_OK;
 }
 
 void i8086_init(I8086* cpu) {
-	cpu->mm.mem = NULL;
-	cpu->mm.funcs.read_mem_byte = NULL;
-	cpu->mm.funcs.write_mem_byte = NULL;
-	cpu->mm.funcs.read_mem_word = NULL;
-	cpu->mm.funcs.write_mem_word = NULL;
-	cpu->mm.funcs.get_mem_ptr = NULL;
-	cpu->mm.funcs.read_io_byte = NULL;
-	cpu->mm.funcs.write_io_byte = NULL;
-	cpu->mm.funcs.read_io_word = NULL;
-	cpu->mm.funcs.write_io_word = NULL;
+	cpu->funcs.read_mem_byte = NULL;
+	cpu->funcs.write_mem_byte = NULL;
+	cpu->funcs.read_mem_word = NULL;
+	cpu->funcs.write_mem_word = NULL;
+	cpu->funcs.get_mem_ptr = NULL;
+	cpu->funcs.read_io_byte = NULL;
+	cpu->funcs.write_io_byte = NULL;
+	cpu->funcs.read_io_word = NULL;
+	cpu->funcs.write_io_word = NULL;
 }
 void i8086_reset(I8086* cpu) {
-	for (int i = 0; i < REGISTER_COUNT; ++i) {
+	for (int i = 0; i < I8086_REGISTER_COUNT; ++i) {
 		cpu->registers[i].r16 = 0;
 	}
 
-	for (int i = 0; i < SEGMENT_COUNT; ++i) {
+	for (int i = 0; i < I8086_SEGMENT_COUNT; ++i) {
 		cpu->segments[i] = 0;
 	}
 
 	IP = 0;
 	CS = 0xFFFF;
 
-	cpu->status.word = 0;
+	PSW = 0;
 	cpu->opcode = 0;
 	cpu->modrm.byte = 0;
 }
@@ -2202,6 +2256,6 @@ int i8086_execute(I8086* cpu) {
 	int r = 0;
 	do {
 		r = i8086_decode_opcode(cpu);
-	} while (r == DECODE_REQ_CYCLE); 
+	} while (r == I8086_DECODE_REQ_CYCLE);
 	return r;
 }

@@ -14,14 +14,6 @@
 #define PF cpu->status.pf
 #define OF cpu->status.of
 #define AF cpu->status.af
-#define DF cpu->status.df
-
-#define CLR_CF() CF = 0
-#define CLR_OF() OF = 0
-#define CLR_SF() SF = 0
-#define CLR_PF() PF = 0
-#define CLR_ZF() ZF = 0
-#define CLR_AF() AF = 0
 
 #define SET_ZF(r) ZF = (r) == 0
 
@@ -126,13 +118,6 @@ void alu_aam(I8086* cpu, uint8_t* l, uint8_t* h, uint8_t divisor) {
 
 /* 8bit alu */
 
-/*uint8_t alu_cal_parity8(uint8_t value) {
-	value ^= value >> 4;
-	value ^= value >> 2;
-	value ^= value >> 1;
-	return (~value & 1) ^ 1;
-}*/
-
 void alu_add8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 	uint16_t tmp = (*x1 + x2);
 	SET_AF_ADD8(*x1, x2, tmp);
@@ -176,24 +161,24 @@ void alu_sbb8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 
 void alu_and8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 	*x1 &= x2;
-	CLR_CF();
-	CLR_OF();
+	CF = 0;
+	OF = 0;
 	SET_SF8(*x1);
 	SET_PF8(*x1);
 	SET_ZF8(*x1);
 }
 void alu_xor8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 	*x1 ^= x2;
-	CLR_CF();
-	CLR_OF();
+	CF = 0;
+	OF = 0;
 	SET_SF8(*x1);
 	SET_PF8(*x1);
 	SET_ZF8(*x1);
 }
 void alu_or8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 	*x1 |= x2;
-	CLR_CF();
-	CLR_OF();
+	CF = 0;
+	OF = 0;
 	SET_SF8(*x1);
 	SET_PF8(*x1);
 	SET_ZF8(*x1);
@@ -275,7 +260,7 @@ void alu_sar8(I8086* cpu, uint8_t* x1, uint8_t count) {
 		SET_SF8(*x1);
 		SET_PF8(*x1);
 		SET_ZF8(*x1);
-		CLR_OF();
+		OF = 0;
 	}
 }
 
@@ -300,34 +285,26 @@ void alu_dec8(I8086* cpu, uint8_t* x1) {
 
 /* 16bit alu */
 
-/*uint8_t alu_cal_parity16(uint16_t value) {
-	value ^= value >> 8;
-	value ^= value >> 4;
-	value ^= value >> 2;
-	value ^= value >> 1;
-	return (~value & 1) ^ 1;
-}*/
-
 void alu_and16(I8086* cpu, uint16_t* x1, uint16_t x2) {
 	*x1 &= x2;
-	CLR_CF();
-	CLR_OF();
+	CF = 0;
+	OF = 0;
 	SET_SF16(*x1);
 	SET_PF16(*x1);
 	SET_ZF16(*x1);
 }
 void alu_xor16(I8086* cpu, uint16_t* x1, uint16_t x2) {
 	*x1 ^= x2;
-	CLR_CF();
-	CLR_OF();
+	CF = 0;
+	OF = 0;
 	SET_SF16(*x1);
 	SET_PF16(*x1);
 	SET_ZF16(*x1);
 }
 void alu_or16(I8086*  cpu, uint16_t* x1, uint16_t x2) {
 	*x1 |= x2;
-	CLR_CF();
-	CLR_OF();
+	CF = 0;
+	OF = 0;
 	SET_SF16(*x1);
 	SET_PF16(*x1);
 	SET_ZF16(*x1);
@@ -448,7 +425,7 @@ void alu_sar16(I8086* cpu, uint16_t* x1, uint8_t count) {
 		SET_SF16(*x1);
 		SET_PF16(*x1);
 		SET_ZF16(*x1);
-		CLR_OF();
+		OF = 0;
 	}
 }
 
