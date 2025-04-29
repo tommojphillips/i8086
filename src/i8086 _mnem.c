@@ -934,52 +934,52 @@ static void jcc(I8086_MNEM* cpu) {
 	int8_t imm = (int8_t)FETCH_BYTE();
 	uint16_t offset = LABEL_OFFSET(imm);
 	switch (CCCC) {
-		case X86_JCC_JO:
+		case I8086_JCC_JO:
 			MNEM("jo %04X", offset);
 			break;
-		case X86_JCC_JNO:
+		case I8086_JCC_JNO:
 			MNEM("jno %04X", offset);
 			break;
-		case X86_JCC_JC:
+		case I8086_JCC_JC:
 			MNEM("jc %04X", offset);
 			break;
-		case X86_JCC_JNC:
+		case I8086_JCC_JNC:
 			MNEM("jnc %04X", offset);
 			break;
-		case X86_JCC_JZ:
+		case I8086_JCC_JZ:
 			MNEM("jz %04X", offset);
 			break;
-		case X86_JCC_JNZ:
+		case I8086_JCC_JNZ:
 			MNEM("jnz %04X", offset);
 			break;
-		case X86_JCC_JBE:
+		case I8086_JCC_JBE:
 			MNEM("jbe %04X", offset);
 			break;
-		case X86_JCC_JA:
+		case I8086_JCC_JA:
 			MNEM("ja %04X", offset);
 			break;
-		case X86_JCC_JS:
+		case I8086_JCC_JS:
 			MNEM("js %04X", offset);
 			break;
-		case X86_JCC_JNS:
+		case I8086_JCC_JNS:
 			MNEM("jns %04X", offset);
 			break;
-		case X86_JCC_JPE:
+		case I8086_JCC_JPE:
 			MNEM("jpe %04X", offset);
 			break;
-		case X86_JCC_JPO:
+		case I8086_JCC_JPO:
 			MNEM("jpo %04X", offset);
 			break;
-		case X86_JCC_JL:
+		case I8086_JCC_JL:
 			MNEM("jl %04X", offset);
 			break;
-		case X86_JCC_JGE:
+		case I8086_JCC_JGE:
 			MNEM("jge %04X", offset);
 			break;
-		case X86_JCC_JLE:
+		case I8086_JCC_JLE:
 			MNEM("jle %04X", offset);
 			break;
-		case X86_JCC_JG:
+		case I8086_JCC_JG:
 			MNEM("jg %04X", offset);
 			break;
 	}
@@ -1154,7 +1154,7 @@ static void neg(I8086_MNEM* cpu) {
 		MNEM("neg %s", reg);
 	}
 }
-static void mul(I8086_MNEM* cpu) {
+static void mul_rm(I8086_MNEM* cpu) {
 	/* mul r/m (F6/F7, R/M reg = b100) b1111011W */
 	if (W) {
 		const char* mul = modrm_get_mnem16(cpu);
@@ -1165,7 +1165,7 @@ static void mul(I8086_MNEM* cpu) {
 		MNEM("mul %s", mul);
 	}
 }
-static void imul(I8086_MNEM* cpu) {
+static void imul_rm(I8086_MNEM* cpu) {
 	/* imul r/m (F6/F7, R/M reg = b101) b1111011W */
 	if (W) {
 		const char* mul = modrm_get_mnem16(cpu);
@@ -1176,7 +1176,7 @@ static void imul(I8086_MNEM* cpu) {
 		MNEM("imul %s", mul);
 	}
 }
-static void div(I8086_MNEM* cpu) {
+static void div_rm(I8086_MNEM* cpu) {
 	/* div r/m (F6/F7, R/M reg = b110) b1111011W */
 	if (W) {
 		const char* div = modrm_get_mnem16(cpu);
@@ -1187,7 +1187,7 @@ static void div(I8086_MNEM* cpu) {
 		MNEM("div %s", div);
 	}
 }
-static void idiv(I8086_MNEM* cpu) {
+static void idiv_rm(I8086_MNEM* cpu) {
 	/* idiv r/m (F6/F7, R/M reg = b111) b1111011W */
 	if (W) {
 		const char* div = modrm_get_mnem16(cpu);
@@ -1457,16 +1457,16 @@ static void i8086_decode_opcode_f6(I8086_MNEM* cpu) {
 			neg(cpu);
 			break;
 		case 0b100:
-			mul(cpu);
+			mul_rm(cpu);
 			break;
 		case 0b101:
-			imul(cpu);
+			imul_rm(cpu);
 			break;
 		case 0b110:
-			div(cpu);
+			div_rm(cpu);
 			break;
 		case 0b111:
-			idiv(cpu);
+			idiv_rm(cpu);
 			break;
 	}
 }
