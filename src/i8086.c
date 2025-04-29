@@ -132,6 +132,10 @@
 /* Get 16bit register ptr */
 #define GET_REG16(reg)         (&cpu->registers[reg & 7].r16)
 
+#define CYCLES(x) cpu->cycles += x
+#define CYCLES_RM(reg_cyc, mem_cyc) cpu->cycles += (cpu->modrm.mod == 0b11 ? reg_cyc : mem_cyc)
+#define CYCLES_RM_D(reg_cyc, mr_cyc, rm_cyc) cpu->cycles += (cpu->modrm.mod == 0b11 ? reg_cyc : !D ? mr_cyc : rm_cyc)
+
 void i8086_push_byte(I8086* cpu, uint8_t value) {
 	SP -= 1;
 	WRITE_BYTE(STACK_ADDR(SP), value);
@@ -193,28 +197,6 @@ static uint16_t modrm_get_base_address(I8086* cpu) {
 	}
 	return 0;
 }
-static uint20_t modrm_get_effective_base_address(I8086* cpu) {
-	// Get 20bit effective base address
-	switch (cpu->modrm.rm) {
-		case 0b000: // base rel indexed - BX + SI
-			return DATA_ADDR(BX + SI);
-		case 0b001: // base rel indexed - BX + DI
-			return DATA_ADDR(BX + DI);
-		case 0b010: // base rel indexed stack - BP + SI
-			return STACK_ADDR(BP + SI);
-		case 0b011: // base rel indexed stack - BP + DI
-			return STACK_ADDR(BP + DI);
-		case 0b100: // implied SI
-			return DATA_ADDR(SI);
-		case 0b101: // implied DI
-			return DATA_ADDR(DI);
-		case 0b110: // implied BP
-			return STACK_ADDR(BP);
-		case 0b111: // implied BX
-			return DATA_ADDR(BX);
-	}
-	return 0;
-}
 static uint16_t modrm_get_address(I8086* cpu) {
 	// Get 16bit address
 	uint16_t addr = 0;
@@ -243,6 +225,44 @@ static uint16_t modrm_get_address(I8086* cpu) {
 	}
 	return addr;
 }
+
+static uint20_t modrm_get_effective_base_address(I8086* cpu) {
+	// Get 20bit effective base address
+	switch (cpu->modrm.rm) {
+		case 0b000: // base rel indexed - BX + SI
+			CYCLES(7);
+			return DATA_ADDR(BX + SI);
+
+		case 0b001: // base rel indexed - BX + DI
+			CYCLES(8);
+			return DATA_ADDR(BX + DI);
+
+		case 0b010: // base rel indexed stack - BP + SI
+			CYCLES(8);
+			return STACK_ADDR(BP + SI);
+
+		case 0b011: // base rel indexed stack - BP + DI
+			CYCLES(7);
+			return STACK_ADDR(BP + DI);
+
+		case 0b100: // implied SI
+			CYCLES(5);
+			return DATA_ADDR(SI);
+
+		case 0b101: // implied DI
+			CYCLES(5);
+			return DATA_ADDR(DI);
+
+		case 0b110: // implied BP
+			CYCLES(5);
+			return STACK_ADDR(BP);
+
+		case 0b111: // implied BX
+			CYCLES(5);
+			return DATA_ADDR(BX);
+	}
+	return 0;
+}
 static uint20_t modrm_get_effective_address(I8086* cpu) {
 	// Get 20bit effective address
 	uint20_t addr = 0;
@@ -252,7 +272,8 @@ static uint20_t modrm_get_effective_address(I8086* cpu) {
 			if (cpu->modrm.rm == 0b110) {
 				// displacement mode - [ disp16 ]
 				uint16_t imm = FETCH_WORD();
-				addr = DATA_ADDR(imm);
+				addr = DATA_ADDR(imm); 
+				CYCLES(6);
 			}
 			else {
 				// register mode - [ base16 ]
@@ -263,15 +284,18 @@ static uint20_t modrm_get_effective_address(I8086* cpu) {
 		case 0b01:
 			// memory mode; 8bit displacement - [ base16 + disp8 ]
 			addr = modrm_get_effective_base_address(cpu) + FETCH_BYTE();
+			CYCLES(4);
 			break;
 
 		case 0b10:
 			// memory mode; 16bit displacement - [ base16 + disp16 ]
-			addr = modrm_get_effective_base_address(cpu) + FETCH_WORD();
+			addr = modrm_get_effective_base_address(cpu) + FETCH_WORD(); 
+			CYCLES(4);
 			break;
 	}
 	return addr;
 }
+
 static uint16_t* modrm_get_ptr16(I8086* cpu) {
 	// Get R/M pointer to 16bit value
 	if (cpu->modrm.mod == 0b11) {
@@ -314,6 +338,7 @@ static void add_rm_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_add8(cpu, rm, imm);
 	}
+	CYCLES_RM(4, 23);
 }
 static void add_rm_reg(I8086* cpu) {
 	/* add r/m, reg (00/01/02/03) b000000DW */
@@ -330,6 +355,7 @@ static void add_rm_reg(I8086* cpu) {
 		get_direction(cpu, &reg, &rm);
 		alu_add8(cpu, rm, *reg);
 	}
+	CYCLES_RM_D(3, 24, 13);
 }
 static void add_accum_imm(I8086* cpu) {
 	/* add AL/AX, imm (04/05) b0000010W */
@@ -341,6 +367,7 @@ static void add_accum_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_add8(cpu, &AL, imm);
 	}
+	CYCLES(4);
 }
 
 static void or_rm_imm(I8086* cpu) {
@@ -364,6 +391,7 @@ static void or_rm_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_or8(cpu, rm, imm);
 	}
+	CYCLES_RM(4, 23);
 }
 static void or_rm_reg(I8086* cpu) {
 	/* or r/m, reg (08/0A/09/0B) b000010DW */
@@ -380,6 +408,7 @@ static void or_rm_reg(I8086* cpu) {
 		get_direction(cpu, &reg, &rm);
 		alu_or8(cpu, rm, *reg);
 	}
+	CYCLES_RM_D(3, 24, 13);
 }
 static void or_accum_imm(I8086* cpu) {
 	/* or AL/AX, imm (0C/0D) b0000110W */
@@ -391,6 +420,7 @@ static void or_accum_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_or8(cpu, &AL, imm);
 	}
+	CYCLES(4);
 }
 
 static void adc_rm_imm(I8086* cpu) {
@@ -414,6 +444,7 @@ static void adc_rm_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_adc8(cpu, rm, imm);
 	}
+	CYCLES_RM(4, 23);
 }
 static void adc_rm_reg(I8086* cpu) {
 	/* adc r/m, reg (10/12/11/13) b000100DW */
@@ -430,6 +461,7 @@ static void adc_rm_reg(I8086* cpu) {
 		get_direction(cpu, &reg, &rm);
 		alu_adc8(cpu, rm, *reg);
 	}
+	CYCLES_RM_D(3, 24, 13);
 }
 static void adc_accum_imm(I8086* cpu) {
 	/* adc AL/AX, imm (14/15) b0001010W */
@@ -441,6 +473,7 @@ static void adc_accum_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_adc8(cpu, &AL, imm);
 	}
+	CYCLES(4);
 }
 
 static void sbb_rm_imm(I8086* cpu) {
@@ -464,6 +497,7 @@ static void sbb_rm_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_sbb8(cpu, rm, imm);
 	}
+	CYCLES_RM(4, 23);
 }
 static void sbb_rm_reg(I8086* cpu) {
 	/* sbb r/m, reg (18/1A/19/1B) b000110DW */
@@ -480,6 +514,7 @@ static void sbb_rm_reg(I8086* cpu) {
 		get_direction(cpu, &reg, &rm);
 		alu_sbb8(cpu, rm, *reg);
 	}
+	CYCLES_RM_D(3, 24, 13);
 }
 static void sbb_accum_imm(I8086* cpu) {
 	/* sbb AL/AX, imm (1C/1D) b0001110W */
@@ -491,6 +526,7 @@ static void sbb_accum_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_sbb8(cpu, &AL, imm);
 	}
+	CYCLES(4);
 }
 
 static void and_rm_imm(I8086* cpu) {
@@ -514,6 +550,7 @@ static void and_rm_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_and8(cpu, rm, imm);
 	}
+	CYCLES_RM(4, 23);
 }
 static void and_rm_reg(I8086* cpu) {
 	/* and r/m, reg (20/22/21/23) b001000DW */
@@ -530,6 +567,7 @@ static void and_rm_reg(I8086* cpu) {
 		get_direction(cpu, &reg, &rm);
 		alu_and8(cpu, rm, *reg);
 	}
+	CYCLES_RM_D(3, 24, 13);
 }
 static void and_accum_imm(I8086* cpu) {
 	/* and AL/AX, imm (24/25) b0010010W */
@@ -541,6 +579,7 @@ static void and_accum_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_and8(cpu, &AL, imm);
 	}
+	CYCLES(4);
 }
 
 static void sub_rm_imm(I8086* cpu) {
@@ -564,6 +603,7 @@ static void sub_rm_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_sub8(cpu, rm, imm);
 	}
+	CYCLES_RM(4, 23);
 }
 static void sub_rm_reg(I8086* cpu) {
 	/* sub r/m, reg (28/2A/29/2B) b001010DW */
@@ -580,6 +620,7 @@ static void sub_rm_reg(I8086* cpu) {
 		get_direction(cpu, &reg, &rm);
 		alu_sub8(cpu, rm, *reg);
 	}
+	CYCLES_RM_D(3, 24, 13);
 }
 static void sub_accum_imm(I8086* cpu) {
 	/* sub AL/AX, imm (2C/2D) b0010110W */
@@ -591,6 +632,7 @@ static void sub_accum_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_sub8(cpu, &AL, imm);
 	}
+	CYCLES(4);
 }
 
 static void xor_rm_imm(I8086* cpu) {
@@ -614,6 +656,7 @@ static void xor_rm_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_xor8(cpu, rm, imm);
 	}
+	CYCLES_RM(4, 23);
 }
 static void xor_rm_reg(I8086* cpu) {
 	/* xor r/m, reg (30/32/31/33) b001100DW */
@@ -630,6 +673,7 @@ static void xor_rm_reg(I8086* cpu) {
 		get_direction(cpu, &reg, &rm);
 		alu_xor8(cpu, rm, *reg);
 	}
+	CYCLES_RM_D(3, 24, 13);
 }
 static void xor_accum_imm(I8086* cpu) {
 	/* xor AL/AX, imm (34/35) b0011010W */
@@ -641,6 +685,7 @@ static void xor_accum_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_xor8(cpu, &AL, imm);
 	}
+	CYCLES(4);
 }
 
 static void cmp_rm_imm(I8086* cpu) {
@@ -664,6 +709,7 @@ static void cmp_rm_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_cmp8(cpu, *rm, imm);
 	}
+	CYCLES_RM(4, 14);
 }
 static void cmp_rm_reg(I8086* cpu) {
 	/* cmp r/m, reg (38/39/3A/3B) b001110DW */
@@ -680,6 +726,7 @@ static void cmp_rm_reg(I8086* cpu) {
 		get_direction(cpu, &reg, &rm);
 		alu_cmp8(cpu, *rm, *reg);
 	}
+	CYCLES_RM(3, 13);
 }
 static void cmp_accum_imm(I8086* cpu) {
 	/* cmp AL/AX, imm (3C/3D) b0011110W */
@@ -691,6 +738,7 @@ static void cmp_accum_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_cmp8(cpu, AL, imm);
 	}
+	CYCLES(4);
 }
 
 static void test_rm_imm(I8086* cpu) {
@@ -705,6 +753,7 @@ static void test_rm_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_test8(cpu, *rm, imm);
 	}
+	CYCLES_RM(5, 13);
 }
 static void test_rm_reg(I8086* cpu) {
 	/* test r/m, reg (84/85) b1000010W */
@@ -719,6 +768,7 @@ static void test_rm_reg(I8086* cpu) {
 		uint8_t* reg = GET_REG8(cpu->modrm.reg);
 		alu_test8(cpu, *rm, *reg);
 	}
+	CYCLES_RM(3, 13);
 }
 static void test_accum_imm(I8086* cpu) {
 	/* test AL/AX, imm (A8/A9) b1010100W */
@@ -730,33 +780,40 @@ static void test_accum_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		alu_test8(cpu, AL, imm);
 	}
+	CYCLES(4);
 }
 
 static void daa(I8086* cpu) {
 	/* Decimal Adjust for Addition (27) b00100111 */
 	alu_daa(cpu, &AL);
+	CYCLES(4);
 }
 static void das(I8086* cpu) {
 	/* Decimal Adjust for Subtraction (2F) b00101111 */
 	alu_das(cpu, &AL);
+	CYCLES(4);
 }
 static void aaa(I8086* cpu) {
 	/* ASCII Adjust for Addition (37) b00110111 */
 	alu_aaa(cpu, &AL, &AH);
+	CYCLES(8);
 }
 static void aas(I8086* cpu) {
 	/* ASCII Adjust for Subtraction (3F) b00111111 */
 	alu_aas(cpu, &AL, &AH);
+	CYCLES(8);
 }
 static void aam(I8086* cpu) {
 	/* ASCII Adjust for Multiply (D4 0A) b11010100 00001010 */
 	uint8_t divisor = FETCH_BYTE(); // undocumented operand; normally 0x0A
 	alu_aam(cpu, &AL, &AH, divisor);
+	CYCLES(83);
 }
 static void aad(I8086* cpu) {
 	/* ASCII Adjust for Division (D5 0A) b11010101 00001010 */
 	uint8_t divisor = FETCH_BYTE(); // undocumented operand; normally 0x0A
 	alu_aad(cpu, &AL, &AH, divisor);
+	CYCLES(60);
 }
 static void salc(I8086* cpu) {
 	/* set carry in AL (D6) b11010110 undocumented opcode */
@@ -766,57 +823,58 @@ static void salc(I8086* cpu) {
 	else {
 		AL = 0;
 	}
-}
-
-static void inc_reg(I8086* cpu) {
-	/* Inc reg16 (40-47) b01000REG */
-	alu_inc16(cpu, GET_REG16(cpu->opcode));
-}
-static void dec_reg(I8086* cpu) {
-	/* Dec reg16 (48-4F) b01001REG */
-	alu_dec16(cpu, GET_REG16(cpu->opcode));
+	CYCLES(2); // ????
 }
 
 static void push_seg(I8086* cpu) {
 	/* Push seg16 (06/0E/16/1E) b000SR110 */
 	i8086_push_word(cpu, cpu->segments[SR]);
+	CYCLES(14);
 }
 static void pop_seg(I8086* cpu) {
 	/* Pop seg16 (07/0F/17/1F) b000SR111 */
 	i8086_pop_word(cpu, &cpu->segments[SR]);
+	CYCLES(12);
 }
 static void push_reg(I8086* cpu) {
 	/* Push reg16 (50-57) b01010REG */
 	i8086_push_word(cpu, cpu->registers[cpu->opcode & 7].r16);
+	CYCLES(15);
 }
 static void pop_reg(I8086* cpu) {
 	/* Pop reg16 (58-5F) b01011REG */
 	i8086_pop_word(cpu, GET_REG16(cpu->opcode));
+	CYCLES(12);
 }
 static void push_rm(I8086* cpu) {
 	/* Push R/M (FF, R/M reg = 110) b11111111 */
 	uint16_t* rm = modrm_get_ptr16(cpu);
 	i8086_push_word(cpu, *rm);
+	CYCLES(24);
 }
 static void pop_rm(I8086* cpu) {
 	/* Pop R/M (8F) b10001111 */
 	uint16_t* rm = modrm_get_ptr16(cpu);
 	i8086_pop_word(cpu, rm);
+	CYCLES(25);
 }
 static void pushf(I8086* cpu) {
 	/* push psw (9C) b10011100 */
 	PSW &= 0x7D5;
 	i8086_push_word(cpu, PSW);
+	CYCLES(14);
 }
 static void popf(I8086* cpu) {
 	/* pop psw (9D) b10011101 */
 	i8086_pop_word(cpu, &PSW);
 	PSW &= 0x7D5;
+	CYCLES(12);
 }
 
 static void nop(I8086* cpu) {
 	/* nop (90) b10010000 */
 	(void)cpu;
+	CYCLES(3);
 }
 static void xchg_accum_reg(I8086* cpu) {
 	/* xchg AX, reg16 (91 - 97) b10010REG */	
@@ -824,6 +882,7 @@ static void xchg_accum_reg(I8086* cpu) {
 	uint16_t* reg = GET_REG16(cpu->opcode);
 	AX = *reg;
 	*reg = tmp;
+	CYCLES(3);
 }
 static void xchg_rm_reg(I8086* cpu) {
 	/* xchg R/M, reg16 (86/87) b1000011W */
@@ -842,6 +901,7 @@ static void xchg_rm_reg(I8086* cpu) {
 		*rm = *reg;
 		*reg = tmp;
 	}
+	CYCLES_RM(4, 25);
 }
 
 static void cbw(I8086* cpu) {
@@ -852,6 +912,7 @@ static void cbw(I8086* cpu) {
 	else {
 		AH = 0;
 	}
+	CYCLES(2);
 }
 static void cwd(I8086* cpu) {
 	/* Convert word to dword (99) b10011001 */
@@ -861,6 +922,7 @@ static void cwd(I8086* cpu) {
 	else {
 		DX = 0;
 	}
+	CYCLES(5);
 }
 
 static void wait(I8086* cpu) {
@@ -868,51 +930,67 @@ static void wait(I8086* cpu) {
 	if (!cpu->pins.test) {
 		IP -= 1;
 	}
+	CYCLES(4);
 }
 
 static void sahf(I8086* cpu) {
 	/* Store AH into flags (9E) b10011110 */
 	PSW &= 0xFF00;
 	PSW |= AH & 0xD5;
+	CYCLES(4);
 }
 static void lahf(I8086* cpu) {
 	/* Load flags into AH (9F) b10011111 */
 	AH = PSW & 0xD5;
+	CYCLES(4);
 }
 
 static void hlt(I8086* cpu) {
 	/* Halt CPU (F4) b11110100 */
 	IP -= 1;
+	CYCLES(2);
 }
 static void cmc(I8086* cpu) {
 	// Complement carry flag (F5) b11110101
 	CF = ~CF;
+	CYCLES(2);
 }
 static void clc(I8086* cpu) {
 	// clear carry flag (F8) b11111000
 	CF = 0;
+	CYCLES(2);
 }
 static void stc(I8086* cpu) {
 	// set carry flag (F9) b11111001
 	CF = 1;
+	CYCLES(2);
 }
 static void cli(I8086* cpu) {
 	// clear interrupt flag (FA) b11111010
 	IF = 0;
+	CYCLES(2);
 }
 static void sti(I8086* cpu) {
 	// set interrupt flag (FB) b1111011
 	IF = 1;
+	CYCLES(2);
 }
 static void cld(I8086* cpu) {
 	// clear direction flag (FC) b11111100
 	DF = 0;
+	CYCLES(2);
 }
 static void std(I8086* cpu) {
 	// set direction flag (FD) b11111101
 	DF = 1;
+	CYCLES(2);
 }
 
+static void inc_reg(I8086* cpu) {
+	/* Inc reg16 (40-47) b01000REG */
+	alu_inc16(cpu, GET_REG16(cpu->opcode));
+	CYCLES(3);
+}
 static void inc_rm(I8086* cpu) {
 	/* Inc R/M (FE/FF, R/M reg = 000) b1111111W */
 	if (W) {
@@ -923,6 +1001,13 @@ static void inc_rm(I8086* cpu) {
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_inc8(cpu, rm);
 	}
+	CYCLES_RM(3, 23);
+}
+
+static void dec_reg(I8086* cpu) {
+	/* Dec reg16 (48-4F) b01001REG */
+	alu_dec16(cpu, GET_REG16(cpu->opcode));
+	CYCLES(3);
 }
 static void dec_rm(I8086* cpu) {
 	/* Dec R/M (FE/FF, R/M reg = 001) b1111111W */
@@ -934,6 +1019,7 @@ static void dec_rm(I8086* cpu) {
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_dec8(cpu, rm);
 	}
+	CYCLES_RM(3, 23);
 }
 
 static void rol(I8086* cpu) {
@@ -941,6 +1027,7 @@ static void rol(I8086* cpu) {
 	uint8_t count = 1;
 	if (VW) {
 		count = CL;
+		CYCLES(5 + (4 * count));
 	}
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
@@ -950,12 +1037,14 @@ static void rol(I8086* cpu) {
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_rol8(cpu, rm, count);
 	}
+	CYCLES_RM(2, 23);
 }
 static void ror(I8086* cpu) {
 	/* Rotate left (D0/D1/D2/D3, R/M reg = 001) b110100VW */
 	uint8_t count = 1;
 	if (VW) {
 		count = CL;
+		CYCLES(5 + (4 * count));
 	}
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
@@ -965,12 +1054,14 @@ static void ror(I8086* cpu) {
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_ror8(cpu, rm, count);
 	}
+	CYCLES_RM(2, 23);
 }
 static void rcl(I8086* cpu) {
 	/* Rotate through carry left (D0/D1/D2/D3, R/M reg = 010) b110100VW */
 	uint8_t count = 1;
 	if (VW) {
 		count = CL;
+		CYCLES(5 + (4 * count));
 	}
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
@@ -980,12 +1071,14 @@ static void rcl(I8086* cpu) {
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_rcl8(cpu, rm, count);
 	}
+	CYCLES_RM(2, 23);
 }
 static void rcr(I8086* cpu) {
 	/* Rotate through carry right (D0/D1/D2/D3, R/M reg = 011) b110100VW */
 	uint8_t count = 1;
 	if (VW) {
 		count = CL;
+		CYCLES(5 + (4 * count));
 	}
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
@@ -995,12 +1088,14 @@ static void rcr(I8086* cpu) {
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_rcr8(cpu, rm, count);
 	}
+	CYCLES_RM(2, 23);
 }
 static void shl(I8086* cpu) {
 	/* Shift left (D0/D1/D2/D3, R/M reg = 100) b110100VW */
 	uint8_t count = 1;
 	if (VW) {
 		count = CL;
+		CYCLES(5 + (4 * count));
 	}
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
@@ -1010,12 +1105,14 @@ static void shl(I8086* cpu) {
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_shl8(cpu, rm, count);
 	}
+	CYCLES_RM(2, 23);
 }
 static void shr(I8086* cpu) {
 	/* Shift Logical right (D0/D1/D2/D3, R/M reg = 101) b110100VW */
 	uint8_t count = 1;
 	if (cpu->opcode & 0x2) {
 		count = CL;
+		CYCLES(5 + (4 * count));
 	}
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
@@ -1025,12 +1122,14 @@ static void shr(I8086* cpu) {
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_shr8(cpu, rm, count);
 	}
+	CYCLES_RM(2, 23);
 }
 static void sar(I8086* cpu) {
 	/* Shift Arithmetic right (D0/D1/D2/D3, R/M reg = 111) b110100VW */
 	uint8_t count = 1;
 	if (cpu->opcode & 0x2) {
 		count = CL;
+		CYCLES(5 + (4 * count));
 	}
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
@@ -1040,61 +1139,83 @@ static void sar(I8086* cpu) {
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		alu_sar8(cpu, rm, count);
 	}
+	CYCLES_RM(2, 23);
 }
 
+static int jump_condition(I8086* cpu) {
+	switch (CCCC) {
+		case I8086_JCC_JO:
+			if (OF) return 1;
+			break;
+		case I8086_JCC_JNO:
+			if (!OF) return 1;
+			break;
+		case I8086_JCC_JC:
+			if (CF) return 1;
+			break;
+		case I8086_JCC_JNC:
+			if (!CF) return 1;
+			break;
+		case I8086_JCC_JZ:
+			if (ZF) return 1;
+			break;
+		case I8086_JCC_JNZ:
+			if (!ZF) return 1;
+			break;
+		case I8086_JCC_JBE:
+			if (CF || ZF) return 1;
+			break;
+		case I8086_JCC_JA:
+			if (!CF && !ZF) return 1;
+			break;
+		case I8086_JCC_JS:
+			if (SF) return 1;
+			break;
+		case I8086_JCC_JNS:
+			if (!SF) return 1;
+			break;
+		case I8086_JCC_JPE:
+			if (PF) return 1;
+			break;
+		case I8086_JCC_JPO:
+			if (!PF) return 1;
+			break;
+		case I8086_JCC_JL:
+			if (SF != OF) return 1;
+			break;
+		case I8086_JCC_JGE:
+			if (SF == OF) return 1;
+			break;
+		case I8086_JCC_JLE:
+			if (ZF || SF != OF) return 1;
+			break;
+		case I8086_JCC_JG:
+			if (!ZF && SF == OF) return 1;
+			break;
+	}
+	return 0;
+}
 static void jcc(I8086* cpu) {
 	/* conditional jump(70-7F) b011XCCCC
 	   8086 cpu decode 60-6F the same as 70-7F */
 	int8_t offset = (int8_t)FETCH_BYTE();
-	switch (CCCC) {
-		case I8086_JCC_JO:
-			if (OF) IP += offset;
-			break;
-		case I8086_JCC_JNO:
-			if (!OF) IP += offset;
-			break;
-		case I8086_JCC_JC:
-			if (CF) IP += offset;
-			break;
-		case I8086_JCC_JNC:
-			if (!CF) IP += offset;
-			break;
-		case I8086_JCC_JZ:
-			if (ZF) IP += offset;
-			break;
-		case I8086_JCC_JNZ:
-			if (!ZF) IP += offset;
-			break;
-		case I8086_JCC_JBE:
-			if (CF || ZF) IP += offset;
-			break;
-		case I8086_JCC_JA:
-			if (!CF && !ZF) IP += offset;
-			break;
-		case I8086_JCC_JS:
-			if (SF) IP += offset;
-			break;
-		case I8086_JCC_JNS:
-			if (!SF) IP += offset;
-			break;
-		case I8086_JCC_JPE:
-			if (PF) IP += offset;
-			break;
-		case I8086_JCC_JPO:
-			if (!PF) IP += offset;
-			break;
-		case I8086_JCC_JL:
-			if (SF != OF) IP += offset;
-			break;
-		case I8086_JCC_JGE:
-			if (SF == OF) IP += offset;
-			break;
-		case I8086_JCC_JLE:
-			if (ZF || SF != OF) IP += offset;
-			break;
-		case I8086_JCC_JG:
-			if (!ZF && SF == OF) IP += offset;
-			break;
+	if (jump_condition(cpu)) {
+		IP += offset;
+		CYCLES(16);
+	}
+	else {
+		CYCLES(4);
+	}
+}
+static void jcxz(I8086* cpu) {
+	/* jump if CX zero (E3) b11100011 */
+	int8_t offset = (int8_t)FETCH_BYTE();
+	if (CX == 0) {
+		IP += offset;
+		CYCLES(18);
+	}
+	else {
+		CYCLES(6);
 	}
 }
 
@@ -1102,16 +1223,19 @@ static void jmp_intra_direct_short(I8086* cpu) {
 	/* Jump short imm8 (EB) b11101011 */
 	int8_t imm = (int8_t)FETCH_BYTE();
 	IP += imm;
+	CYCLES(15);
 }
 static void jmp_intra_direct(I8086* cpu) {
 	/* Jump near  imm16 (E9) b11101001 */
 	int16_t imm = (int16_t)FETCH_WORD();
 	IP += imm;
+	CYCLES(15);
 }
 static void jmp_intra_indirect(I8086* cpu) {
 	/* Jump near indirect (FF, R/M reg = 100) b11111111 */	
 	uint16_t* rm = (uint16_t*)modrm_get_ptr16(cpu);
 	IP = *rm;
+	CYCLES_RM(11, 18);
 }
 
 static void jmp_inter_direct(I8086* cpu) {
@@ -1120,12 +1244,14 @@ static void jmp_inter_direct(I8086* cpu) {
 	uint16_t imm2 = FETCH_WORD();
 	IP = imm;
 	CS = imm2;
+	CYCLES(15);
 }
 static void jmp_inter_indirect(I8086* cpu) {
 	/* Jump inter indirect (FF, R/M reg = 101) b11111111 */
 	uint16_t* rm = modrm_get_ptr16(cpu);
 	IP = *rm;
 	CS = *(rm + 1);
+	CYCLES_RM(11, 24);
 }
 
 static void call_intra_direct(I8086* cpu) {
@@ -1133,12 +1259,14 @@ static void call_intra_direct(I8086* cpu) {
 	int16_t imm = (int16_t)FETCH_WORD();
 	i8086_push_word(cpu, IP);
 	IP += imm;
+	CYCLES(23);
 }
 static void call_intra_indirect(I8086* cpu) {
 	/* Call mem/reg (FF, R/M reg = 010) b11111111 */
 	i8086_push_word(cpu, IP);
 	uint16_t* rm = (uint16_t*)modrm_get_ptr16(cpu);
 	IP = *rm;
+	CYCLES_RM(20, 29);
 }
 
 static void call_inter_direct(I8086* cpu) {
@@ -1149,6 +1277,7 @@ static void call_inter_direct(I8086* cpu) {
 	i8086_push_word(cpu, IP);
 	IP = imm;
 	CS = imm2;
+	CYCLES(36);
 }
 static void call_inter_indirect(I8086* cpu) {
 	/* Call mem (FF, R/M reg = 011) b11111111 */	
@@ -1157,6 +1286,7 @@ static void call_inter_indirect(I8086* cpu) {
 	uint16_t* rm = modrm_get_ptr16(cpu);
 	IP = *rm;
 	CS = *(rm + 1);
+	CYCLES(53);
 }
 
 static void ret_intra_add_imm(I8086* cpu) {
@@ -1165,11 +1295,13 @@ static void ret_intra_add_imm(I8086* cpu) {
 	uint16_t imm = FETCH_WORD();
 	i8086_pop_word(cpu, &IP);
 	SP += imm;
+	CYCLES(24);
 }
 static void ret_intra(I8086* cpu) {
 	/* Ret (C3) b11000011 
 	undocumented* C1 decodes identically to C3 */
 	i8086_pop_word(cpu, &IP);
+	CYCLES(20);
 }
 static void ret_inter_add_imm(I8086* cpu) {
 	/* Ret imm16 (CA) b11001010 
@@ -1178,12 +1310,14 @@ static void ret_inter_add_imm(I8086* cpu) {
 	i8086_pop_word(cpu, &IP);
 	i8086_pop_word(cpu, &CS);
 	SP += imm;
+	CYCLES(33);
 }
 static void ret_inter(I8086* cpu) {
 	/* Ret (CB) b11001011 
 	undocumented* C9 decodes identically to CB */
 	i8086_pop_word(cpu, &IP);
 	i8086_pop_word(cpu, &CS);
+	CYCLES(34);
 }
 
 static void mov_rm_imm(I8086* cpu) {
@@ -1199,6 +1333,7 @@ static void mov_rm_imm(I8086* cpu) {
 		uint8_t imm = FETCH_BYTE();
 		*rm = imm;
 	}
+	CYCLES(14);
 }
 static void mov_reg_imm(I8086* cpu) {
 	/* mov r/m, reg (B0-BF) b1011WREG */
@@ -1212,6 +1347,7 @@ static void mov_reg_imm(I8086* cpu) {
 		uint8_t* reg = GET_REG8(cpu->opcode);
 		*reg = imm;
 	}
+	CYCLES(4);
 }
 static void mov_rm_reg(I8086* cpu) {
 	/* mov r/m, reg (88/89/8A/8B) b100010DW */
@@ -1228,6 +1364,7 @@ static void mov_rm_reg(I8086* cpu) {
 		get_direction(cpu, &reg, &rm);
 		*rm = *reg;
 	}
+	CYCLES_RM_D(2, 13, 12);
 }
 static void mov_accum_mem(I8086* cpu) {
 	/* mov AL/AX, [mem] (A0/A1/A2/A3) b101000DW */
@@ -1244,6 +1381,7 @@ static void mov_accum_mem(I8086* cpu) {
 		get_direction(cpu, &reg, &mem);
 		*reg = *mem;
 	}
+	CYCLES(14);
 }
 static void mov_seg(I8086* cpu) {
 	/* mov r/m, seg (8C/8E) b100011D0 */
@@ -1252,6 +1390,7 @@ static void mov_seg(I8086* cpu) {
 	uint16_t* reg = &cpu->segments[cpu->modrm.reg & 3];
 	get_direction(cpu, &reg, &rm);
 	*rm = *reg;
+	CYCLES_RM_D(2, 13, 12);
 }
 
 static void lea(I8086* cpu) {
@@ -1260,6 +1399,7 @@ static void lea(I8086* cpu) {
 	uint16_t* reg = GET_REG16(cpu->modrm.reg);
 	uint16_t addr = modrm_get_address(cpu);
 	*reg = addr;
+	CYCLES(2);
 }
 
 static void not(I8086* cpu) {
@@ -1272,6 +1412,7 @@ static void not(I8086* cpu) {
 		uint8_t* reg = GET_REG8(cpu->modrm.rm);
 		*reg = ~*reg;
 	}
+	CYCLES_RM(3, 24);
 }
 static void neg(I8086* cpu) {
 	/* neg reg (F6/F7, R/M reg = b011) b1111011W */
@@ -1283,6 +1424,7 @@ static void neg(I8086* cpu) {
 		uint8_t* reg = GET_REG8(cpu->modrm.rm);
 		*reg = 0 - *reg;
 	}
+	CYCLES_RM(3, 24);
 }
 static void mul_rm(I8086* cpu) {
 	/* mul r/m (F6/F7, R/M reg = b100) b1111011W */
@@ -1291,11 +1433,13 @@ static void mul_rm(I8086* cpu) {
 		uint32_t r = AX * *mul;
 		AX = ((r >> 16) & 0xFFFF);
 		DX = (r & 0xFFFF);
+		CYCLES_RM(118, 224);
 	}
 	else {
 		uint8_t* mul = modrm_get_ptr8(cpu);
 		uint8_t al = AL;
 		AX = al * *mul;
+		CYCLES_RM(70, 76);
 	}
 }
 static void imul_rm(I8086* cpu) {
@@ -1319,12 +1463,14 @@ static void div_rm(I8086* cpu) {
 		uint32_t dividend = (AX << 16) | DX;
 		AX = (dividend / *divider) & 0xFFFF; // quotient
 		DX = dividend % *divider; // remainder
+		CYCLES_RM(144, 150);
 	}
 	else {
 		uint8_t* divider = modrm_get_ptr8(cpu);
 		uint16_t dividend = AX;
 		AH = (dividend / *divider) & 0xFF; // quotient
 		AL = dividend % *divider; // remainder
+		CYCLES_RM(80, 86);
 	}
 }
 static void idiv_rm(I8086* cpu) {
@@ -1334,12 +1480,14 @@ static void idiv_rm(I8086* cpu) {
 		int32_t dividend = (AX << 16) | DX;
 		AX = (dividend / *divider) & 0xFFFF; // quotient
 		DX = dividend % *divider; // remainder
+		CYCLES_RM(128, 134);
 	}
 	else {
 		int8_t* divider = (int8_t*)modrm_get_ptr8(cpu);
 		int16_t dividend = AX;
 		AL = (dividend / *divider) & 0xFF; // quotient
 		AH = dividend % *divider; // remainder
+		CYCLES_RM(80, 86);
 	}
 }
 
@@ -1353,11 +1501,13 @@ static int movs(I8086* cpu) {
 		uint16_t* src = GET_MEM_PTR(DATA_ADDR(SI));
 		uint16_t* dest = GET_MEM_PTR(EXTRA_ADDR(DI));
 		*dest = *src;
+		CYCLES(26);
 	}
 	else {
 		uint8_t* src = GET_MEM_PTR(DATA_ADDR(SI));
 		uint8_t* dest = GET_MEM_PTR(EXTRA_ADDR(DI));
 		*dest = *src;
+		CYCLES(18);
 	}
 
 	if (DF) {
@@ -1381,9 +1531,11 @@ static int stos(I8086* cpu) {
 	/* stos (AA/AB) b1010101W */
 	if (W) {
 		WRITE_WORD(EXTRA_ADDR(DI), AX);
+		CYCLES(15);
 	}
 	else {
 		WRITE_BYTE(EXTRA_ADDR(DI), AL);
+		CYCLES(11);
 	}
 
 	if (DF) {
@@ -1416,7 +1568,7 @@ static int lods(I8086* cpu) {
 	else {
 		SI += (1 << W);
 	}
-
+	CYCLES(16);
 	if (cpu->rep_prefix != 0xFF) {
 		CX -= 1;
 		if (CX > 0) {
@@ -1446,7 +1598,7 @@ static int cmps(I8086* cpu) {
 		SI += (1 << W);
 		DI += (1 << W);
 	}
-
+	CYCLES(30);
 	if (cpu->rep_prefix != 0xFF) {
 		CX -= 1;
 		if (CX > 0 && ZF == cpu->rep_prefix) {
@@ -1472,7 +1624,7 @@ static int scas(I8086* cpu) {
 	else {
 		DI += (1 << W);
 	}
-
+	CYCLES(19);
 	if (cpu->rep_prefix != 0xFF) {
 		CX -= 1;
 		if (CX > 0 && ZF == cpu->rep_prefix) {
@@ -1489,6 +1641,7 @@ static void les(I8086* cpu) {
 	uint16_t* rm = modrm_get_ptr16(cpu);
 	*reg = *rm;
 	ES = *(rm + 1);
+	CYCLES(24);
 }
 static void lds(I8086* cpu) {
 	/* lds (C5) b11000101 */
@@ -1497,12 +1650,14 @@ static void lds(I8086* cpu) {
 	uint16_t* rm = modrm_get_ptr16(cpu);
 	*reg = *rm;
 	DS = *(rm + 1);
+	CYCLES(24);
 }
 
 static void xlat(I8086* cpu) {
 	/* Get data pointed by BX + AL (D7) b11010111 */
 	uint8_t* mem = GET_MEM_PTR(DATA_ADDR(BX + AL));
 	AL = *mem;
+	CYCLES(11);
 }
 
 static void esc(I8086* cpu) {
@@ -1524,6 +1679,10 @@ static void loopnz(I8086* cpu) {
 	CX -= 1;
 	if (CX && !ZF) {
 		IP += disp;
+		CYCLES(19);
+	}
+	else {
+		CYCLES(5);
 	}
 }
 static void loopz(I8086* cpu) {
@@ -1532,6 +1691,10 @@ static void loopz(I8086* cpu) {
 	CX -= 1;
 	if (CX && ZF) {
 		IP += disp;
+		CYCLES(18);
+	}
+	else {
+		CYCLES(6);
 	}
 }
 static void loop(I8086* cpu) {
@@ -1540,13 +1703,10 @@ static void loop(I8086* cpu) {
 	CX -= 1;
 	if (CX) {
 		IP += disp;
+		CYCLES(17);
 	}
-}
-static void jcxz(I8086* cpu) {
-	/* jump if CX zero (E3) b11100011 */
-	int8_t disp = FETCH_BYTE();
-	if (CX == 0) {
-		IP += disp;
+	else {
+		CYCLES(5);
 	}
 }
 
@@ -1559,6 +1719,7 @@ static void in_accum_imm(I8086* cpu) {
 	else {
 		AL = READ_IO(imm);
 	}
+	CYCLES(14);
 }
 static void out_accum_imm(I8086* cpu) {
 	/* out imm, AL/AX */
@@ -1569,6 +1730,7 @@ static void out_accum_imm(I8086* cpu) {
 	else {
 		WRITE_IO(imm, AL);
 	}
+	CYCLES(14);
 }
 static void in_accum_dx(I8086* cpu) {
 	/* in AL/AX, DX */
@@ -1578,6 +1740,7 @@ static void in_accum_dx(I8086* cpu) {
 	else {
 		AL = READ_IO(DX);
 	}
+	CYCLES(12);
 }
 static void out_accum_dx(I8086* cpu) {
 	/* out DX, AL/AX */
@@ -1587,13 +1750,19 @@ static void out_accum_dx(I8086* cpu) {
 	else {
 		WRITE_IO(DX, AL);
 	}
+	CYCLES(12);
 }
 
 static void int_(I8086* cpu) {
 	/* interrupt (CC/CD) b1100110V */
-	uint8_t type = 3;
+	uint8_t type = 0;
  	if (cpu->opcode & 0x1) {
 		type = FETCH_BYTE();
+		CYCLES(71);
+	}
+	else {
+		type = 3;
+		CYCLES(72);
 	}
 	i8086_int(cpu, type);
 }
@@ -1601,6 +1770,10 @@ static void into(I8086* cpu) {
 	/* interrupt on overflow (CE) b11001110 */
 	if (OF) {
 		i8086_int(cpu, 4);
+		CYCLES(73);
+	}
+	else {
+		CYCLES(4);
 	}
 }
 static void iret(I8086* cpu) {
@@ -1608,6 +1781,7 @@ static void iret(I8086* cpu) {
 	i8086_pop_word(cpu, &IP);
 	i8086_pop_word(cpu, &CS);
 	i8086_pop_word(cpu, &PSW);
+	CYCLES(44);
 }
 
 /* prefix byte */
@@ -1615,17 +1789,20 @@ static int rep(I8086* cpu) {
 	/* rep/repz/repnz (F2/F3) b1111001Z */
 	cpu->rep_prefix = cpu->opcode & 0x1;
 	cpu->opcode = FETCH_BYTE();
+	CYCLES(9);
 	return I8086_DECODE_REQ_CYCLE;
 }
 static int segment_override(I8086* cpu) {
 	/* (26/2E/36/3E) b001SR110 */
 	cpu->segment_prefix = SR;
 	cpu->opcode = FETCH_BYTE();
+	CYCLES(2);
 	return I8086_DECODE_REQ_CYCLE;
 }
 static int lock(I8086* cpu) {
 	/* lock the bus (F0) b11110000 */
 	cpu->opcode = FETCH_BYTE();
+	CYCLES(2);
 	return I8086_DECODE_REQ_CYCLE;
 }
 

@@ -63,10 +63,7 @@ typedef uint32_t uint20_t;
 /* ignore unnamed_structure warning */
 #pragma warning( disable : 4201)
 
-#define PSW_BIT_STRUCT
-
 /* 16bit Program Status Word */
-#ifdef PSW_BIT_STRUCT
 typedef struct I8086_PROGRAM_STATUS_WORD {
 	union {
 		uint16_t word;
@@ -90,9 +87,6 @@ typedef struct I8086_PROGRAM_STATUS_WORD {
 		};
 	};
 } I8086_PROGRAM_STATUS_WORD;
-#else
-typedef uint16_t I8086_PROGRAM_STATUS_WORD;
-#endif
 
 /* 16bit register */
 typedef struct I8086_REG16 {
@@ -154,6 +148,8 @@ typedef struct I8086 {
 	I8086_MOD_RM modrm;                          // current mod r/m byte (if applicable)
 	uint8_t segment_prefix;                      // current segment override prefix byte (if applicable)
 	uint8_t rep_prefix;                          // current rep prefix byte (if applicable)
+	
+	uint64_t cycles;
 
 	I8086_PINS pins;                             // cpu pins
 	I8086_FUNCS funcs;                           // cpu memory function pointers
