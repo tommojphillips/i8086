@@ -39,24 +39,22 @@
 #define I8086_DECODE_UNDEFINED 2
 
  /* Jump condition */
-enum {
-	X86_JCC_JO = 0b0000,
-	X86_JCC_JNO = 0b0001,
-	X86_JCC_JC = 0b0010,
-	X86_JCC_JNC = 0b0011,
-	X86_JCC_JZ = 0b0100,
-	X86_JCC_JNZ = 0b0101,
-	X86_JCC_JBE = 0b0110,
-	X86_JCC_JA = 0b0111,
-	X86_JCC_JS = 0b1000,
-	X86_JCC_JNS = 0b1001,
-	X86_JCC_JPE = 0b1010,
-	X86_JCC_JPO = 0b1011,
-	X86_JCC_JL = 0b1100,
-	X86_JCC_JGE = 0b1101,
-	X86_JCC_JLE = 0b1110,
-	X86_JCC_JG = 0b1111,
-};
+#define I8086_JCC_JO  0b0000
+#define I8086_JCC_JNO 0b0001
+#define I8086_JCC_JC  0b0010
+#define I8086_JCC_JNC 0b0011
+#define I8086_JCC_JZ  0b0100
+#define I8086_JCC_JNZ 0b0101
+#define I8086_JCC_JBE 0b0110
+#define I8086_JCC_JA  0b0111
+#define I8086_JCC_JS  0b1000
+#define I8086_JCC_JNS 0b1001
+#define I8086_JCC_JPE 0b1010
+#define I8086_JCC_JPO 0b1011
+#define I8086_JCC_JL  0b1100
+#define I8086_JCC_JGE 0b1101
+#define I8086_JCC_JLE 0b1110
+#define I8086_JCC_JG  0b1111
 
 /* 20bit address */
 typedef uint32_t uint20_t;
@@ -137,19 +135,28 @@ typedef struct I8086_FUNCS {
 
 } I8086_FUNCS;
 
+typedef struct I8086_PINS {
+	uint8_t nmi;  // pin17 - non-maskable interrupt
+	uint8_t inr;  // pin18 - interrupt request
+	uint8_t test; // pin23 - test
+	uint8_t lock; // pin29 - lock the bus
+	uint8_t mode; // pin33 - minimum/maximum mode
+} I8086_PINS;
+
 /* I8086 CPU State */
 typedef struct I8086 {
-	uint16_t ip;
-	I8086_REG16 registers[I8086_REGISTER_COUNT];
-	uint16_t segments[I8086_SEGMENT_COUNT];
-	I8086_PROGRAM_STATUS_WORD status;
+	uint16_t ip;                                 // instruction pointer
+	I8086_REG16 registers[I8086_REGISTER_COUNT]; // general registers
+	uint16_t segments[I8086_SEGMENT_COUNT];      // segment registers
+	I8086_PROGRAM_STATUS_WORD status;            // program status word
 
-	uint8_t opcode;
-	I8086_MOD_RM modrm;
-	uint8_t segment_prefix;
-	uint8_t rep_prefix;
-	uint8_t test_line; // pin 23
-	I8086_FUNCS funcs; // cpu memory functions
+	uint8_t opcode;                              // current opcode
+	I8086_MOD_RM modrm;                          // current mod r/m byte (if applicable)
+	uint8_t segment_prefix;                      // current segment override prefix byte (if applicable)
+	uint8_t rep_prefix;                          // current rep prefix byte (if applicable)
+
+	I8086_PINS pins;                             // cpu pins
+	I8086_FUNCS funcs;                           // cpu memory function pointers
 } I8086;
 
 #ifdef __cplusplus

@@ -3,6 +3,12 @@
  * Intel 8086 CPU
  */
 
+/* Source Material
+ * The 8086 Family Users Manual OCT79 by Intel
+ * The 8086 Book by Russell Rector, George Alexy
+ * Programming The 8086/8088 by James W. Coffron
+*/
+
 #include <stdint.h>
 
 #include "i8086.h"
@@ -859,7 +865,7 @@ static void cwd(I8086* cpu) {
 
 static void wait(I8086* cpu) {
 	/* wait (9B) b10011011 */
-	if (!cpu->test_line) {
+	if (!cpu->pins.test) {
 		IP -= 1;
 	}
 }
@@ -1041,52 +1047,52 @@ static void jcc(I8086* cpu) {
 	   8086 cpu decode 60-6F the same as 70-7F */
 	int8_t offset = (int8_t)FETCH_BYTE();
 	switch (CCCC) {
-		case X86_JCC_JO:
+		case I8086_JCC_JO:
 			if (OF) IP += offset;
 			break;
-		case X86_JCC_JNO:
+		case I8086_JCC_JNO:
 			if (!OF) IP += offset;
 			break;
-		case X86_JCC_JC:
+		case I8086_JCC_JC:
 			if (CF) IP += offset;
 			break;
-		case X86_JCC_JNC:
+		case I8086_JCC_JNC:
 			if (!CF) IP += offset;
 			break;
-		case X86_JCC_JZ:
+		case I8086_JCC_JZ:
 			if (ZF) IP += offset;
 			break;
-		case X86_JCC_JNZ:
+		case I8086_JCC_JNZ:
 			if (!ZF) IP += offset;
 			break;
-		case X86_JCC_JBE:
+		case I8086_JCC_JBE:
 			if (CF || ZF) IP += offset;
 			break;
-		case X86_JCC_JA:
+		case I8086_JCC_JA:
 			if (!CF && !ZF) IP += offset;
 			break;
-		case X86_JCC_JS:
+		case I8086_JCC_JS:
 			if (SF) IP += offset;
 			break;
-		case X86_JCC_JNS:
+		case I8086_JCC_JNS:
 			if (!SF) IP += offset;
 			break;
-		case X86_JCC_JPE:
+		case I8086_JCC_JPE:
 			if (PF) IP += offset;
 			break;
-		case X86_JCC_JPO:
+		case I8086_JCC_JPO:
 			if (!PF) IP += offset;
 			break;
-		case X86_JCC_JL:
+		case I8086_JCC_JL:
 			if (SF != OF) IP += offset;
 			break;
-		case X86_JCC_JGE:
+		case I8086_JCC_JGE:
 			if (SF == OF) IP += offset;
 			break;
-		case X86_JCC_JLE:
+		case I8086_JCC_JLE:
 			if (ZF || SF != OF) IP += offset;
 			break;
-		case X86_JCC_JG:
+		case I8086_JCC_JG:
 			if (!ZF && SF == OF) IP += offset;
 			break;
 	}
@@ -1278,7 +1284,7 @@ static void neg(I8086* cpu) {
 		*reg = 0 - *reg;
 	}
 }
-static void mul(I8086* cpu) {
+static void mul_rm(I8086* cpu) {
 	/* mul r/m (F6/F7, R/M reg = b100) b1111011W */
 	if (W) {
 		uint16_t* mul = modrm_get_ptr16(cpu);
@@ -1292,7 +1298,7 @@ static void mul(I8086* cpu) {
 		AX = al * *mul;
 	}
 }
-static void imul(I8086* cpu) {
+static void imul_rm(I8086* cpu) {
 	/* imul r/m (F6/F7, R/M reg = b101) b1111011W */
 	if (W) {
 		int16_t* mul = (int16_t*)modrm_get_ptr16(cpu);
@@ -1306,7 +1312,7 @@ static void imul(I8086* cpu) {
 		AX = al * *mul;
 	}
 }
-static void div(I8086* cpu) {
+static void div_rm(I8086* cpu) {
 	/* div r/m (F6/F7, R/M reg = b110) b1111011W */
 	if (W) {
 		uint16_t* divider = modrm_get_ptr16(cpu);
@@ -1321,7 +1327,7 @@ static void div(I8086* cpu) {
 		AL = dividend % *divider; // remainder
 	}
 }
-static void idiv(I8086* cpu) {
+static void idiv_rm(I8086* cpu) {
 	/* idiv r/m (F6/F7, R/M reg = b111) b1111011W */
 	if (W) {
 		int16_t* divider = (int16_t*)modrm_get_ptr16(cpu);
@@ -1703,16 +1709,16 @@ static void i8086_decode_opcode_f6(I8086* cpu) {
 			neg(cpu);
 			break;
 		case 0b100:
-			mul(cpu);
+			mul_rm(cpu);
 			break;
 		case 0b101:
-			imul(cpu);
+			imul_rm(cpu);
 			break;
 		case 0b110:
-			div(cpu);
+			div_rm(cpu);
 			break;
 		case 0b111:
-			idiv(cpu);
+			idiv_rm(cpu);
 			break;
 	}
 }
