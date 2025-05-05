@@ -79,7 +79,7 @@
 #define GET_SEG(seg) ((cpu->segment_prefix != 0xFF) ? cpu->segment_prefix : seg)
 
 /* Get 20bit address SEG:ADDR */
-#define GET_ADDR(seg, addr) (((cpu->segments[seg] << 4) + addr) & 0xFFFFF)
+#define GET_ADDR(seg, addr) ((cpu->segments[seg] << 4) + addr)
 
 /* Get 20bit code segment address CS:ADDR */
 #define IP_ADDR            GET_ADDR(SEG_CS, IP)
@@ -2431,6 +2431,7 @@ void i8086_reset(I8086* cpu) {
 	PSW = 0;
 	cpu->opcode = 0;
 	cpu->modrm.byte = 0;
+	cpu->cycles = 0;
 }
 
 int i8086_execute(I8086* cpu) {
