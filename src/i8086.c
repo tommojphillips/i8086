@@ -7,6 +7,7 @@
  * The 8086 Family Users Manual OCT79 by Intel
  * The 8086 Book by Russell Rector, George Alexy
  * Programming The 8086/8088 by James W. Coffron
+ * Undocumented 8086 instructions, explained by the microcode - https://www.righto.com/2023/07/undocumented-8086-instructions.html
 */
 
 #include <stdint.h>
@@ -126,8 +127,14 @@
 /* Get memory pointer */
 #define GET_MEM_PTR(addr)      cpu->funcs.get_mem_ptr(addr)
 
-/* Get 8bit register ptr */
-#define GET_REG8(reg)          (&cpu->registers[reg & 3].l + ((reg & 7) >> 2))
+/* Get 8bit register ptr 
+	Registers are layed out in memory as: AX:{ LO, HI }, CX:{ LO, HI }, DX:{ LO, HI }, BX:{ LO, HI } etc
+	The lower 4 16bit registers can be indexed as 8bit registers.
+	Therefore bit1 and bit2 refer to the selected register pair (AX/CX/DX/BX).
+	bit3 tells us if the LO byte (0) or the HI byte (1) of the register pair is selected
+	if bit3 is clr. bits b00, b01, b10, b11 refer to the LO byte of the register. (AL, CL, DL, BL)
+	if bit3 is set. bits b00, b01, b10, b11 refer to the HI byte of the register. (AH, CH, DH, BH) */
+#define GET_REG8(reg)          (&cpu->registers[reg & 3].l + ((reg >> 2) & 1))
 
 /* Get 16bit register ptr */
 #define GET_REG16(reg)         (&cpu->registers[reg & 7].r16)
@@ -175,6 +182,7 @@ static void get_direction(I8086* cpu, void** ptr1, void** ptr2) {
 
 /* Mod R/M */
 
+/* Use the mod r/m byte to calculate a 16bit indirect address eg (BX+SI) */
 static uint16_t modrm_get_base_address(I8086* cpu) {
 	// Get 1bit address
 	switch (cpu->modrm.rm) {
@@ -197,6 +205,8 @@ static uint16_t modrm_get_base_address(I8086* cpu) {
 	}
 	return 0;
 }
+
+/* Use the mod r/m byte to calculate a 16bit address eg (offset) */
 static uint16_t modrm_get_address(I8086* cpu) {
 	// Get 16bit address
 	uint16_t addr = 0;
@@ -226,6 +236,7 @@ static uint16_t modrm_get_address(I8086* cpu) {
 	return addr;
 }
 
+/* Use the mod r/m byte to calculate a 20bit indirect address eg (segment:BX+SI) */
 static uint20_t modrm_get_effective_base_address(I8086* cpu) {
 	// Get 20bit effective base address
 	switch (cpu->modrm.rm) {
@@ -263,6 +274,8 @@ static uint20_t modrm_get_effective_base_address(I8086* cpu) {
 	}
 	return 0;
 }
+
+/* Use the mod r/m byte to calculate a 20bit address eg (segment:offset) */
 static uint20_t modrm_get_effective_address(I8086* cpu) {
 	// Get 20bit effective address
 	uint20_t addr = 0;
@@ -296,6 +309,7 @@ static uint20_t modrm_get_effective_address(I8086* cpu) {
 	return addr;
 }
 
+/* Use the mod r/m byte to calculate a 16bit pointer to a register or memory location */
 static uint16_t* modrm_get_ptr16(I8086* cpu) {
 	// Get R/M pointer to 16bit value
 	if (cpu->modrm.mod == 0b11) {
@@ -305,6 +319,8 @@ static uint16_t* modrm_get_ptr16(I8086* cpu) {
 		return GET_MEM_PTR(modrm_get_effective_address(cpu));
 	}
 }
+
+/* Use the mod r/m byte to calculate a 8bit pointer to a register or memory location */
 static uint8_t* modrm_get_ptr8(I8086* cpu) {
 	// Get R/M pointer to 8bit value
 	if (cpu->modrm.mod == 0b11) {
@@ -1290,7 +1306,7 @@ static void call_inter_indirect(I8086* cpu) {
 }
 
 static void ret_intra_add_imm(I8086* cpu) {
-	/* Ret imm16 (C2) b11000010 
+	/* Ret imm16 (C2) b110000X0 
 	   undocumented* C0 decodes identically to C2 */
 	uint16_t imm = FETCH_WORD();
 	i8086_pop_word(cpu, &IP);
@@ -1298,13 +1314,13 @@ static void ret_intra_add_imm(I8086* cpu) {
 	CYCLES(24);
 }
 static void ret_intra(I8086* cpu) {
-	/* Ret (C3) b11000011 
+	/* Ret (C3) b110000X1 
 	undocumented* C1 decodes identically to C3 */
 	i8086_pop_word(cpu, &IP);
 	CYCLES(20);
 }
 static void ret_inter_add_imm(I8086* cpu) {
-	/* Ret imm16 (CA) b11001010 
+	/* Ret imm16 (CA) b110010X0 
 	undocumented* C8 decodes identically to CA */
 	uint16_t imm = FETCH_WORD();
 	i8086_pop_word(cpu, &IP);
@@ -1313,7 +1329,7 @@ static void ret_inter_add_imm(I8086* cpu) {
 	CYCLES(33);
 }
 static void ret_inter(I8086* cpu) {
-	/* Ret (CB) b11001011 
+	/* Ret (CB) b110010X1 
 	undocumented* C9 decodes identically to CB */
 	i8086_pop_word(cpu, &IP);
 	i8086_pop_word(cpu, &CS);
@@ -1816,7 +1832,7 @@ static void i8086_fetch(I8086* cpu) {
 
 /* decode opcode */
 static void i8086_decode_opcode_80(I8086* cpu) {
-	/* 0x80 - 0x83 b100000SW */
+	/* 0x80 - 0x83 b100000SW (Immed) */
 	cpu->modrm.byte = FETCH_BYTE();
 	switch (cpu->modrm.reg) {
 		case 0b000: // ADD
@@ -1846,7 +1862,7 @@ static void i8086_decode_opcode_80(I8086* cpu) {
 	}
 }
 static void i8086_decode_opcode_d0(I8086* cpu) {
-	/* 0xD0 - 0xD3 b110100VW */
+	/* 0xD0 - 0xD3 b110100VW (Shift) */
 	cpu->modrm.byte = FETCH_BYTE();
 	switch (cpu->modrm.reg) {
 		case 0b000:
@@ -1873,7 +1889,7 @@ static void i8086_decode_opcode_d0(I8086* cpu) {
 	}
 }
 static void i8086_decode_opcode_f6(I8086* cpu) {
-	/* F6/F7 b1111011W */
+	/* F6/F7 b1111011W (Group 1) */
 	cpu->modrm.byte = FETCH_BYTE();
 	switch (cpu->modrm.reg) {
 		case 0b000:
@@ -1900,7 +1916,7 @@ static void i8086_decode_opcode_f6(I8086* cpu) {
 	}
 }
 static void i8086_decode_opcode_fe(I8086* cpu) {
-	/* FE/FF b1111111W */
+	/* FE/FF b1111111W (Group 2) */
 	cpu->modrm.byte = FETCH_BYTE();
 	switch (cpu->modrm.reg) {
 		case 0b000:

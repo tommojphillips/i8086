@@ -159,8 +159,17 @@ typedef struct I8086 {
 extern "C" {
 #endif
 
+/* Initialize the CPU. 
+	Sets all function pointers to NULL
+	cpu: the cpu instance */
 void i8086_init(I8086* cpu);
+
+/* Reset The CPU to it's reset state.
+	cpu: the cpu instance */
 void i8086_reset(I8086* cpu);
+
+/* Fetch, Execute the next instruction
+	cpu: the cpu instance */
 int i8086_execute(I8086* cpu);
 
 #ifdef __cplusplus
