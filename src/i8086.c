@@ -1313,8 +1313,9 @@ static int jump_condition(I8086* cpu) {
 static void jcc(I8086* cpu) {
 	/* conditional jump(70-7F) b011XCCCC
 	   8086 cpu decode 60-6F the same as 70-7F */
-	int8_t offset = (int8_t)FETCH_BYTE();
+	uint8_t imm = FETCH_BYTE();
 	if (jump_condition(cpu)) {
+		uint16_t offset = sign_extend8_16(imm);
 		IP += offset;
 		CYCLES(16);
 	}
@@ -1324,8 +1325,9 @@ static void jcc(I8086* cpu) {
 }
 static void jcxz(I8086* cpu) {
 	/* jump if CX zero (E3) b11100011 */
-	int8_t offset = (int8_t)FETCH_BYTE();
+	uint8_t imm = FETCH_BYTE();
 	if (CX == 0) {
+		uint16_t offset = sign_extend8_16(imm);
 		IP += offset;
 		CYCLES(18);
 	}
@@ -1336,13 +1338,14 @@ static void jcxz(I8086* cpu) {
 
 static void jmp_intra_direct_short(I8086* cpu) {
 	/* Jump short imm8 (EB) b11101011 */
-	int8_t imm = (int8_t)FETCH_BYTE();
-	IP += imm;
+	uint8_t imm = FETCH_BYTE();
+	uint16_t se = sign_extend8_16(imm);
+	IP += se;
 	CYCLES(15);
 }
 static void jmp_intra_direct(I8086* cpu) {
 	/* Jump near  imm16 (E9) b11101001 */
-	int16_t imm = (int16_t)FETCH_WORD();
+	uint16_t imm = FETCH_WORD();
 	IP += imm;
 	CYCLES(15);
 }
