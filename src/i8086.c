@@ -77,7 +77,7 @@
 #define CCCC (cpu->opcode & 0x0F)
 
 /* Get segment override prefix */
-#define GET_SEG(seg) ((cpu->segment_prefix != 0xFF) ? cpu->segment_prefix : seg)
+#define GET_SEG_OVERRIDE(seg) ((cpu->segment_prefix != 0xFF) ? cpu->segment_prefix : seg)
 
 /* Get 20bit address SEG:ADDR */
 #define GET_ADDR(seg, addr) ((cpu->segments[seg] << 4) + addr)
@@ -86,13 +86,14 @@
 #define IP_ADDR            GET_ADDR(SEG_CS, IP)
 
 /* Get 20bit stack segment address SS:ADDR */
-#define STACK_ADDR(addr)   GET_ADDR(GET_SEG(SEG_SS), addr)
+#define STACK_ADDR(addr)      GET_ADDR(SEG_SS, addr)
+#define STACK_ADDR_OR(addr)   GET_ADDR(GET_SEG_OVERRIDE(SEG_SS), addr)
 
 /* Get 20bit data segment address DS:ADDR */
-#define DATA_ADDR(addr)    GET_ADDR(GET_SEG(SEG_DS), addr)
+#define DATA_ADDR(addr)    GET_ADDR(GET_SEG_OVERRIDE(SEG_DS), addr)
 
 /* Get 20bit extra segment address ES:ADDR */
-#define EXTRA_ADDR(addr)   GET_ADDR(GET_SEG(SEG_ES), addr)
+#define EXTRA_ADDR(addr)   GET_ADDR(SEG_ES, addr)
 
 /* Read byte from [addr] */
 #define READ_BYTE(addr)        cpu->funcs.read_mem_byte(addr)
@@ -138,6 +139,9 @@
 
 /* Get 16bit register ptr */
 #define GET_REG16(reg)         (&cpu->registers[reg & 7].r16)
+
+/* Get 16bit segment ptr */
+#define GET_SEG(seg)         (&cpu->segments[seg & 3])
 
 #define CYCLES(x) cpu->cycles += x
 #define CYCLES_RM(reg_cyc, mem_cyc) cpu->cycles += (cpu->modrm.mod == 0b11 ? reg_cyc : mem_cyc)
@@ -250,11 +254,11 @@ static uint20_t modrm_get_effective_base_address(I8086* cpu) {
 
 		case 0b010: // base rel indexed stack - BP + SI
 			CYCLES(8);
-			return STACK_ADDR(BP + SI);
+			return STACK_ADDR_OR(BP + SI);
 
 		case 0b011: // base rel indexed stack - BP + DI
 			CYCLES(7);
-			return STACK_ADDR(BP + DI);
+			return STACK_ADDR_OR(BP + DI);
 
 		case 0b100: // implied SI
 			CYCLES(5);
@@ -266,7 +270,7 @@ static uint20_t modrm_get_effective_base_address(I8086* cpu) {
 
 		case 0b110: // implied BP
 			CYCLES(5);
-			return STACK_ADDR(BP);
+			return STACK_ADDR_OR(BP);
 
 		case 0b111: // implied BX
 			CYCLES(5);
