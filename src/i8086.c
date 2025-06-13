@@ -1351,7 +1351,7 @@ static void jmp_intra_direct(I8086* cpu) {
 }
 static void jmp_intra_indirect(I8086* cpu) {
 	/* Jump near indirect (FF, R/M reg = 100) b11111111 */	
-	uint16_t* rm = (uint16_t*)modrm_get_ptr16(cpu);
+	uint16_t* rm = modrm_get_ptr16(cpu);
 	IP = *rm;
 	CYCLES_RM(11, 18);
 }
@@ -1366,23 +1366,23 @@ static void jmp_inter_direct(I8086* cpu) {
 }
 static void jmp_inter_indirect(I8086* cpu) {
 	/* Jump inter indirect (FF, R/M reg = 101) b11111111 */
-	uint16_t* rm = modrm_get_ptr16(cpu);
-	IP = *rm;
-	CS = *(rm + 1);
-	CYCLES_RM(11, 24);
+	uint20_t ea = modrm_get_effective_address(cpu);
+	IP = READ_WORD(ea);
+	CS = READ_WORD(ea + 2);
+	CYCLES(24);
 }
 
 static void call_intra_direct(I8086* cpu) {
 	/* Call disp (E8) b11101000 */
-	int16_t imm = (int16_t)FETCH_WORD();
+	uint16_t imm = FETCH_WORD();
 	i8086_push_word(cpu, IP);
 	IP += imm;
 	CYCLES(23);
 }
 static void call_intra_indirect(I8086* cpu) {
 	/* Call mem/reg (FF, R/M reg = 010) b11111111 */
+	uint16_t* rm = modrm_get_ptr16(cpu);
 	i8086_push_word(cpu, IP);
-	uint16_t* rm = (uint16_t*)modrm_get_ptr16(cpu);
 	IP = *rm;
 	CYCLES_RM(20, 29);
 }
@@ -1399,11 +1399,11 @@ static void call_inter_direct(I8086* cpu) {
 }
 static void call_inter_indirect(I8086* cpu) {
 	/* Call mem (FF, R/M reg = 011) b11111111 */	
+	uint20_t ea = modrm_get_effective_address(cpu);
 	i8086_push_word(cpu, CS);
 	i8086_push_word(cpu, IP);
-	uint16_t* rm = modrm_get_ptr16(cpu);
-	IP = *rm;
-	CS = *(rm + 1);
+	IP = READ_WORD(ea);
+	CS = READ_WORD(ea + 2);
 	CYCLES(53);
 }
 
@@ -1505,9 +1505,9 @@ static void mov_seg(I8086* cpu) {
 	/* mov r/m, seg (8C/8E) b100011D0 */
 	fetch_modrm(cpu);
 	uint16_t* rm = modrm_get_ptr16(cpu);
-	uint16_t* reg = &cpu->segments[cpu->modrm.reg & 3];
-	get_direction(cpu, &reg, &rm);
-	*rm = *reg;
+	uint16_t* seg = GET_SEG(cpu->modrm.reg);
+	get_direction(cpu, &seg, &rm);
+	*rm = *seg;
 	CYCLES_RM_D(2, 13, 12);
 }
 
@@ -1805,25 +1805,25 @@ static void les(I8086* cpu) {
 	/* les (C4) b11000100 */
 	fetch_modrm(cpu);
 	uint16_t* reg = GET_REG16(cpu->modrm.reg);
-	uint16_t* rm = modrm_get_ptr16(cpu);
-	*reg = *rm;
-	ES = *(rm + 1);
+	uint20_t ea = modrm_get_effective_address(cpu);
+	*reg = READ_WORD(ea);
+	ES = READ_WORD(ea + 2);
 	CYCLES(24);
 }
 static void lds(I8086* cpu) {
 	/* lds (C5) b11000101 */
 	fetch_modrm(cpu);
 	uint16_t* reg = GET_REG16(cpu->modrm.reg);
-	uint16_t* rm = modrm_get_ptr16(cpu);
-	*reg = *rm;
-	DS = *(rm + 1);
+	uint20_t ea = modrm_get_effective_address(cpu);
+	*reg = READ_WORD(ea);
+	DS = READ_WORD(ea + 2);
 	CYCLES(24);
 }
 
 static void xlat(I8086* cpu) {
 	/* Get data pointed by BX + AL (D7) b11010111 */
-	uint8_t* mem = GET_MEM_PTR(DATA_ADDR(BX + AL));
-	AL = *mem;
+	uint8_t mem = READ_BYTE(DATA_ADDR(BX + AL));
+	AL = mem;
 	CYCLES(11);
 }
 
@@ -2625,6 +2625,14 @@ static int i8086_decode_opcode(I8086 * cpu) {
 	return I8086_DECODE_OK;
 }
 
+static int i8086_decode_instruction(I8086* cpu) {
+	int r = 0;
+	do {
+		r = i8086_decode_opcode(cpu);
+	} while (r == I8086_DECODE_REQ_CYCLE);
+	return r;
+}
+
 void i8086_init(I8086* cpu) {
 	cpu->funcs.read_mem_byte = NULL;
 	cpu->funcs.write_mem_byte = NULL;
@@ -2665,10 +2673,5 @@ void i8086_reset(I8086* cpu) {
 int i8086_execute(I8086* cpu) {
 	i8086_check_interrupts(cpu);
 	i8086_fetch(cpu);
-	 
-	int r = 0;
-	do {
-		r = i8086_decode_opcode(cpu);
-	} while (r == I8086_DECODE_REQ_CYCLE);
-	return r;
+	return i8086_decode_instruction(cpu);
 }
