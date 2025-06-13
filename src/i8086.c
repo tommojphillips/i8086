@@ -337,19 +337,23 @@ static void add_rm_imm(I8086* cpu) {
 	/* add r/m, imm (80/81/82/83, R/M reg = b000) b100000SW */
 	if (W) {
 		if (SW == 0b01) {
-			/* reg16, disp16 */
+			/* reg16, disp16 
+			0x81 */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_WORD();
 			alu_add16(cpu, rm, imm);
 		}
 		else {
-			/* reg16, disp8 */
+			/* reg16, disp8 
+			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_BYTE();
 			alu_add16(cpu, rm, imm);
 		}
 	}
 	else {
+		/* reg8, disp8 
+		0x80, 0x82 */
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		uint8_t imm = FETCH_BYTE();
 		alu_add8(cpu, rm, imm);
@@ -390,19 +394,23 @@ static void or_rm_imm(I8086* cpu) {
 	/* or r/m, imm (80/81/82/83, R/M reg = b001) b100000SW */
 	if (W) {
 		if (SW == 0b01) {
-			/* reg16, disp16 */
+			/* reg16, disp16 
+			0x81 */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_WORD();
 			alu_or16(cpu, rm, imm);
 		}
 		else {
-			/* reg16, disp8 */
+			/* reg16, disp8 
+			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_BYTE();
 			alu_or16(cpu, rm, imm);
 		}
 	}
 	else {
+		/* reg8, disp8 
+		0x80, 0x82 */
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		uint8_t imm = FETCH_BYTE();
 		alu_or8(cpu, rm, imm);
@@ -443,19 +451,23 @@ static void adc_rm_imm(I8086* cpu) {
 	/* adc r/m, imm (80/81/82/83, R/M reg = b010) b100000SW */
 	if (W) {
 		if (SW == 0b01) {
-			/* reg16, disp16 */
+			/* reg16, disp16 
+			0x81 */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_WORD();
 			alu_adc16(cpu, rm, imm);
 		}
 		else {
-			/* reg16, disp8 */
+			/* reg16, disp8 
+			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_BYTE();
 			alu_adc16(cpu, rm, imm);
 		}
 	}
 	else {
+		/* reg8, disp8 
+		0x80, 0x82 */
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		uint8_t imm = FETCH_BYTE();
 		alu_adc8(cpu, rm, imm);
@@ -496,19 +508,23 @@ static void sbb_rm_imm(I8086* cpu) {
 	/* sbb r/m, imm (80/81/82/83, R/M reg = b011)  b100000SW */
 	if (W) {
 		if (SW == 0b01) {
-			/* reg16 + disp16 */
+			/* reg16 + disp16 
+			0x81 */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_WORD();
 			alu_sbb16(cpu, rm, imm);
 		}
 		else {
-			/* reg16 + disp8 */
+			/* reg16 + disp8 
+			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_BYTE();
 			alu_sbb16(cpu, rm, imm);
 		}
 	}
 	else {
+		/* reg8, disp8 
+		0x80, 0x82 */
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		uint8_t imm = FETCH_BYTE();
 		alu_sbb8(cpu, rm, imm);
@@ -549,19 +565,23 @@ static void and_rm_imm(I8086* cpu) {
 	/* and r/m, imm (80/81/82/83, R/M reg = b100) b100000SW */
 	if (W) {
 		if (SW == 0b01) {
-			/* reg16, disp16 */
+			/* reg16, disp16 
+			0x81 */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_WORD();
 			alu_and16(cpu, rm, imm);
 		}
 		else {
-			/* reg16, disp8 */
+			/* reg16, disp8 
+			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_BYTE();
 			alu_and16(cpu, rm, imm);
 		}
 	}
 	else {
+		/* reg8, disp8
+		0x80, 0x82 */
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		uint8_t imm = FETCH_BYTE();
 		alu_and8(cpu, rm, imm);
@@ -602,19 +622,23 @@ static void sub_rm_imm(I8086* cpu) {
 	/* sub r/m, imm (80/81, R/M reg = b101) b100000SW */
 	if (W) {
 		if (SW == 0b01) {
-			/* reg16, disp16 */
+			/* reg16, disp16 
+			0x81 */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_WORD();
 			alu_sub16(cpu, rm, imm);
 		}
 		else {
-			/* reg16, disp8 */
+			/* reg16, disp8 
+			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_BYTE();
 			alu_sub16(cpu, rm, imm);
 		}
 	}
 	else {
+		/* reg8, disp8 
+		0x80, 0x82 */
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		uint8_t imm = FETCH_BYTE();
 		alu_sub8(cpu, rm, imm);
@@ -655,19 +679,23 @@ static void xor_rm_imm(I8086* cpu) {
 	/* xor r/m, imm (80/81/82/83, R/M reg = b110) b100000SW */
 	if (W) {
 		if (SW == 0b01) {
-			/* reg16, disp16 */
+			/* reg16, disp16 
+			0x81 */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_WORD();
 			alu_xor16(cpu, rm, imm);
 		}
 		else {
-			/* reg16, disp8 */
+			/* reg16, disp8 
+			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_BYTE();
 			alu_xor16(cpu, rm, imm);
 		}
 	} 
 	else {
+		/* reg8, disp8 
+		0x80, 0x82 */
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		uint8_t imm = FETCH_BYTE();
 		alu_xor8(cpu, rm, imm);
@@ -708,19 +736,23 @@ static void cmp_rm_imm(I8086* cpu) {
 	/* cmp r/m, imm (80/81/82/83, R/M reg = b111)  b100000SW */
 	if (W) {
 		if (SW == 0b01) {
-			/* reg16, disp16 */
+			/* reg16, disp16 
+			0x81 */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_WORD();
 			alu_cmp16(cpu, *rm, imm);
 		}
 		else {
-			/* reg16, disp8 */
+			/* reg16, disp8 
+			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
 			uint16_t imm = FETCH_BYTE();
 			alu_cmp16(cpu, *rm, imm);
 		}
 	}
 	else {
+		/* reg8, disp8 
+		0x80, 0x82 */
 		uint8_t* rm = modrm_get_ptr8(cpu);
 		uint8_t imm = FETCH_BYTE();
 		alu_cmp8(cpu, *rm, imm);

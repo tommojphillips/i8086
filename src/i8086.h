@@ -34,9 +34,9 @@
 #define I8086_REGISTER_COUNT 8
 #define I8086_SEGMENT_COUNT  4
 
-#define I8086_DECODE_OK        0
-#define I8086_DECODE_REQ_CYCLE 1
-#define I8086_DECODE_UNDEFINED 2
+#define I8086_DECODE_OK        0 /* instruction was decoded */
+#define I8086_DECODE_REQ_CYCLE 1 /* prefix bytes and string operations require multiple decode cycles */
+#define I8086_DECODE_UNDEFINED 2 /* undefined instruction */
 
  /* Jump condition */
 #define I8086_JCC_JO  0b0000
