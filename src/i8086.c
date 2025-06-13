@@ -2036,7 +2036,7 @@ static void i8086_decode_opcode_80(I8086* cpu) {
 			break;
 	}
 }
-static void i8086_decode_opcode_d0(I8086* cpu) {
+static int i8086_decode_opcode_d0(I8086* cpu) {
 	/* 0xD0 - 0xD3 b110100VW (Shift) */
 	fetch_modrm(cpu);
 	switch (cpu->modrm.reg) {
@@ -2058,18 +2058,23 @@ static void i8086_decode_opcode_d0(I8086* cpu) {
 		case 0b101:
 			shr(cpu);
 			break;
+		case 0b110:
+			return I8086_DECODE_UNDEFINED;
 		case 0b111:
 			sar(cpu);
 			break;
 	}
+	return I8086_DECODE_OK;
 }
-static void i8086_decode_opcode_f6(I8086* cpu) {
+static int i8086_decode_opcode_f6(I8086* cpu) {
 	/* F6/F7 b1111011W (Group 1) */
 	fetch_modrm(cpu);
 	switch (cpu->modrm.reg) {
 		case 0b000:
 			test_rm_imm(cpu);
 			break;
+		case 0b001:
+			return I8086_DECODE_UNDEFINED;
 		case 0b010:
 			not(cpu);
 			break;
@@ -2089,10 +2094,12 @@ static void i8086_decode_opcode_f6(I8086* cpu) {
 			idiv_rm(cpu);
 			break;
 	}
+	return I8086_DECODE_OK;
 }
-static void i8086_decode_opcode_fe(I8086* cpu) {
+static int i8086_decode_opcode_fe(I8086* cpu) {
 	/* FE/FF b1111111W (Group 2) */
 	fetch_modrm(cpu);
+	if (W) {
 	switch (cpu->modrm.reg) {
 		case 0b000:
 			inc_rm(cpu);
@@ -2115,7 +2122,30 @@ static void i8086_decode_opcode_fe(I8086* cpu) {
 		case 0b110:
 			push_rm(cpu);
 			break;
+			
+			case 0b111:
+				return I8086_DECODE_UNDEFINED;
+		}
 	}
+	else {
+		switch (cpu->modrm.reg) {
+			case 0b000:
+				inc_rm(cpu);
+				break;
+			case 0b001:
+				dec_rm(cpu);
+				break;
+
+			case 0b010:
+			case 0b011:
+			case 0b100:
+			case 0b101:
+			case 0b110:
+			case 0b111:
+				return I8086_DECODE_UNDEFINED;
+		}
+	}
+	return I8086_DECODE_OK;
 }
 
 static int i8086_decode_opcode(I8086 * cpu) {
@@ -2489,8 +2519,7 @@ static int i8086_decode_opcode(I8086 * cpu) {
 		case 0xD1:
 		case 0xD2:
 		case 0xD3:
-			i8086_decode_opcode_d0(cpu);
-			break;
+			return i8086_decode_opcode_d0(cpu);
 		case 0xD4:
 			aam(cpu);
 			break;
@@ -2568,8 +2597,7 @@ static int i8086_decode_opcode(I8086 * cpu) {
 			break;
 		case 0xF6:
 		case 0xF7:
-			i8086_decode_opcode_f6(cpu);
-			break;
+			return i8086_decode_opcode_f6(cpu);
 		case 0xF8:
 			clc(cpu);
 			break;
@@ -2590,8 +2618,7 @@ static int i8086_decode_opcode(I8086 * cpu) {
 			break;
 		case 0xFE:
 		case 0xFF:
-			i8086_decode_opcode_fe(cpu);
-			break;
+			return i8086_decode_opcode_fe(cpu);
 		default:
 			return I8086_DECODE_UNDEFINED;
 	}
