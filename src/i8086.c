@@ -335,6 +335,14 @@ static uint8_t* modrm_get_ptr8(I8086* cpu) {
 	}
 }
 
+static int16_t sign_extend8_16(uint8_t value) {
+	int16_t s = 0;
+	if (value > 0x7F) {
+		s |= 0xFF00;
+	}
+	s |= value;
+	return s;
+}
 /* Opcodes */
 
 static void add_rm_imm(I8086* cpu) {
@@ -351,8 +359,9 @@ static void add_rm_imm(I8086* cpu) {
 			/* reg16, disp8 
 			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			uint16_t imm = FETCH_BYTE();
-			alu_add16(cpu, rm, imm);
+			uint8_t imm = FETCH_BYTE();
+			int16_t se = sign_extend8_16(imm);
+			alu_add16(cpu, rm, se);
 		}
 	}
 	else {
@@ -408,8 +417,9 @@ static void or_rm_imm(I8086* cpu) {
 			/* reg16, disp8 
 			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			uint16_t imm = FETCH_BYTE();
-			alu_or16(cpu, rm, imm);
+			uint8_t imm = FETCH_BYTE();
+			int16_t se = sign_extend8_16(imm);
+			alu_or16(cpu, rm, se);
 		}
 	}
 	else {
@@ -465,8 +475,9 @@ static void adc_rm_imm(I8086* cpu) {
 			/* reg16, disp8 
 			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			uint16_t imm = FETCH_BYTE();
-			alu_adc16(cpu, rm, imm);
+			uint8_t imm = FETCH_BYTE();
+			int16_t se = sign_extend8_16(imm);
+			alu_adc16(cpu, rm, se);
 		}
 	}
 	else {
@@ -522,8 +533,9 @@ static void sbb_rm_imm(I8086* cpu) {
 			/* reg16 + disp8 
 			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			uint16_t imm = FETCH_BYTE();
-			alu_sbb16(cpu, rm, imm);
+			uint8_t imm = FETCH_BYTE();
+			int16_t se = sign_extend8_16(imm);
+			alu_sbb16(cpu, rm, se);
 		}
 	}
 	else {
@@ -579,8 +591,9 @@ static void and_rm_imm(I8086* cpu) {
 			/* reg16, disp8 
 			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			uint16_t imm = FETCH_BYTE();
-			alu_and16(cpu, rm, imm);
+			uint8_t imm = FETCH_BYTE();
+			int16_t se = sign_extend8_16(imm);
+			alu_and16(cpu, rm, se);
 		}
 	}
 	else {
@@ -636,8 +649,9 @@ static void sub_rm_imm(I8086* cpu) {
 			/* reg16, disp8 
 			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			uint16_t imm = FETCH_BYTE();
-			alu_sub16(cpu, rm, imm);
+			uint8_t imm = FETCH_BYTE();
+			int16_t se = sign_extend8_16(imm);
+			alu_sub16(cpu, rm, se);
 		}
 	}
 	else {
@@ -693,8 +707,9 @@ static void xor_rm_imm(I8086* cpu) {
 			/* reg16, disp8 
 			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			uint16_t imm = FETCH_BYTE();
-			alu_xor16(cpu, rm, imm);
+			uint8_t imm = FETCH_BYTE();
+			int16_t se = sign_extend8_16(imm);
+			alu_xor16(cpu, rm, se);
 		}
 	} 
 	else {
@@ -750,8 +765,9 @@ static void cmp_rm_imm(I8086* cpu) {
 			/* reg16, disp8 
 			0x83 is 8bit sign extended to 16bit */
 			uint16_t* rm = modrm_get_ptr16(cpu);
-			uint16_t imm = FETCH_BYTE();
-			alu_cmp16(cpu, *rm, imm);
+			uint8_t imm = FETCH_BYTE();
+			int16_t se = sign_extend8_16(imm);
+			alu_cmp16(cpu, *rm, se);
 		}
 	}
 	else {
