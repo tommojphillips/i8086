@@ -12,10 +12,12 @@
 
 /* I8086 CPU State */
 typedef struct I8086_MNEM {
-	char mnem[32];
+	char str[32];
 	char addressing_str[32];
-	I8086* state;           // CPU state
-	uint16_t counter;       // instruction counter
+	I8086 const* state;     // CPU state
+	uint16_t counter;       // instruction length
+	uint16_t offset;		// IP
+	uint16_t segment;		// SEGMENT
 	uint8_t opcode;         // opcode
 	uint8_t segment_prefix; // segement override index
 	uint8_t rep_prefix;     // rep prefix
@@ -28,6 +30,7 @@ extern "C" {
 #endif
 
 int i8086_mnem(I8086_MNEM* cpu);
+int i8086_mnem_at(I8086_MNEM* mnem, uint16_t cs, uint16_t ip);
 
 #ifdef __cplusplus
 };

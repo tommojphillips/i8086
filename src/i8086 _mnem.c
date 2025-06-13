@@ -13,14 +13,11 @@
  /* define IP as counter */
 #define IP  cpu->counter
 
-/* Get segment override prefix */
-#define GET_SEG(seg)       ((cpu->state->segment_prefix != 0xFF) ? cpu->state->segment_prefix : seg)
-
 /* Get 20bit address SEG:ADDR */
-#define GET_ADDR(seg, addr) (((cpu->state->segments[seg] << 4) + addr) & 0xFFFFF)
+#define GET_ADDR(addr) (((cpu->segment << 4) + addr) & 0xFFFFF)
 
  /* Get 20bit code segment address CS:ADDR */
-#define IP_ADDR            GET_ADDR(SEG_CS, IP)
+#define IP_ADDR            GET_ADDR(IP)
 
 /* Fetch word at CS:IP. Inc IP by 2 */
 #define FETCH_BYTE()       cpu->state->funcs.read_mem_byte(IP_ADDR); IP += 1
@@ -59,7 +56,7 @@
 //#define LABEL_OFFSET(x) (x)
 
 #define MNEM_F(mem, x, ...) sprintf(mem+strlen(mem), x, __VA_ARGS__)
-#define MNEM(x, ...) MNEM_F(cpu->mnem, x, __VA_ARGS__)
+#define MNEM(x, ...) MNEM_F(cpu->str, x, __VA_ARGS__)
 
 static const char* reg8_mnem[] = {
 	"al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"
@@ -84,28 +81,28 @@ static void get_direction(I8086_MNEM* cpu, void** ptr1, void** ptr2) {
 static void get_base_mnem(I8086_MNEM* cpu, char* t) {
 	switch (cpu->modrm.rm) {
 		case 0b000: // base rel indexed - BX + SI
-			MNEM_F(t, "BX + SI");
+			MNEM_F(t, "bx + si");
 			break;
 		case 0b001: // base rel indexed - BX + DI
-			MNEM_F(t, "BX + DI");
+			MNEM_F(t, "bx + di");
 			break;
 		case 0b010: // base rel indexed stack - BP + SI
-			MNEM_F(t, "BP + SI");
+			MNEM_F(t, "bp + si");
 			break;
 		case 0b011: // base rel indexed stack - BP + DI
-			MNEM_F(t, "BP + DI");
+			MNEM_F(t, "bp + di");
 			break;
 		case 0b100: // implied SI
-			MNEM_F(t, "SI");
+			MNEM_F(t, "si");
 			break;
 		case 0b101: // implied DI
-			MNEM_F(t, "DI");
+			MNEM_F(t, "di");
 			break;
 		case 0b110: // implied BP
-			MNEM_F(t, "BP");
+			MNEM_F(t, "bp");
 			break;
 		case 0b111: // implied BX
-			MNEM_F(t, "BX");
+			MNEM_F(t, "bx");
 			break;
 	}
 }
@@ -208,11 +205,11 @@ static void add_accum_imm(I8086_MNEM* cpu) {
 	/* add AL/AX, imm (04/05) b0000010W */
 	if (W) {
 		uint16_t imm = FETCH_WORD();
-		MNEM("add %s, %04X", GET_REG16(REG_AX), imm);
+		MNEM("add ax, %04X", imm);
 	}
 	else {
 		uint8_t imm = FETCH_BYTE();
-		MNEM("add %s, %02X", GET_REG8(REG_AL), imm);
+		MNEM("add al, %02X", imm);
 	}
 }
 
@@ -258,11 +255,11 @@ static void or_accum_imm(I8086_MNEM* cpu) {
 	/* or AL/AX, imm (0C/0D) b0000110W */
 	if (W) {
 		uint16_t imm = FETCH_WORD();
-		MNEM("or %s, %04X", GET_REG16(REG_AX), imm);
+		MNEM("or ax, %04X", imm);
 	}
 	else {
 		uint8_t imm = FETCH_BYTE();
-		MNEM("or %s, %02X", GET_REG8(REG_AL), imm);
+		MNEM("or al, %02X", imm);
 	}
 }
 
@@ -308,11 +305,11 @@ static void adc_accum_imm(I8086_MNEM* cpu) {
 	/* adc AL/AX, imm (14/15) b0001010W */
 	if (W) {
 		uint16_t imm = FETCH_WORD();
-		MNEM("adc %s, %04X", GET_REG16(REG_AX), imm);
+		MNEM("adc ax, %04X", imm);
 	}
 	else {
 		uint8_t imm = FETCH_BYTE();
-		MNEM("adc %s, %02X", GET_REG8(REG_AL), imm);
+		MNEM("adc al, %02X", imm);
 	}
 }
 
@@ -358,11 +355,11 @@ static void sbb_accum_imm(I8086_MNEM* cpu) {
 	/* sbb AL/AX, imm (1C/1D) b0001110W */
 	if (W) {
 		uint16_t imm = FETCH_WORD();
-		MNEM("sbb %s, %04X", GET_REG16(REG_AX), imm);
+		MNEM("sbb ax, %04X", imm);
 	}
 	else {
 		uint8_t imm = FETCH_BYTE();
-		MNEM("sbb %s, %02X", GET_REG8(REG_AL), imm);
+		MNEM("sbb al, %02X", imm);
 	}
 }
 
@@ -408,11 +405,11 @@ static void and_accum_imm(I8086_MNEM* cpu) {
 	/* and AL/AX, imm (24/25) b0010010W */
 	if (W) {
 		uint16_t imm = FETCH_WORD();
-		MNEM("and %s, %04X", GET_REG16(REG_AX), imm);
+		MNEM("and ax, %04X", imm);
 	}
 	else {
 		uint8_t imm = FETCH_BYTE();
-		MNEM("and %s, %02X", GET_REG8(REG_AL), imm);
+		MNEM("and al, %02X", imm);
 	}
 }
 
@@ -458,11 +455,11 @@ static void sub_accum_imm(I8086_MNEM* cpu) {
 	/* sub AL/AX, imm (2C/2D) b0010110W */
 	if (W) {
 		uint16_t imm = FETCH_WORD();
-		MNEM("sub %s, %04X", GET_REG16(REG_AX), imm);
+		MNEM("sub ax, %04X", imm);
 	}
 	else {
 		uint8_t imm = FETCH_BYTE();
-		MNEM("sub %s, %02X", GET_REG8(REG_AL), imm);
+		MNEM("sub al, %02X", imm);
 	}
 }
 
@@ -508,11 +505,11 @@ static void xor_accum_imm(I8086_MNEM* cpu) {
 	/* xor AL/AX, imm (34/35) b0011010W */
 	if (W) {
 		uint16_t imm = FETCH_WORD();
-		MNEM("xor %s, %04X", GET_REG16(REG_AX), imm);
+		MNEM("xor ax, %04X", imm);
 	}
 	else {
 		uint8_t imm = FETCH_BYTE();
-		MNEM("xor %s, %02X", GET_REG8(REG_AL), imm);
+		MNEM("xor al, %02X", imm);
 	}
 }
 
@@ -558,11 +555,11 @@ static void cmp_accum_imm(I8086_MNEM* cpu) {
 	/* cmp AL/AX, imm (3C/3D) b0011110W */
 	if (W) {
 		uint16_t imm = FETCH_WORD();
-		MNEM("cmp %s, %04X", GET_REG16(REG_AX), imm);
+		MNEM("cmp ax, %04X", imm);
 	}
 	else {
 		uint8_t imm = FETCH_BYTE();
-		MNEM("cmp %s, %02X", GET_REG8(REG_AL), imm);
+		MNEM("cmp al, %02X", imm);
 	}
 }
 
@@ -600,11 +597,11 @@ static void test_accum_imm(I8086_MNEM* cpu) {
 	/* test AL/AX, imm (A8/A9) b1010100W */
 	if (W) {
 		uint16_t imm = FETCH_WORD();
-		MNEM("test %s, %04X", GET_REG16(REG_AX), imm);
+		MNEM("test ax, %04X", imm);
 	}
 	else {
 		uint8_t imm = FETCH_BYTE();
-		MNEM("test %s, %02X", GET_REG8(REG_AL), imm);
+		MNEM("test al, %02X", imm);
 	}
 }
 
@@ -1381,12 +1378,14 @@ static int lock(I8086_MNEM* cpu) {
 	return I8086_DECODE_REQ_CYCLE;
 }
 
-static void i8086_fetch(I8086_MNEM* cpu) {
+static void i8086_fetch(I8086_MNEM* cpu, uint16_t cs, uint16_t ip) {
 	cpu->modrm.byte = 0;
 	cpu->segment_prefix = 0xFF;
 	cpu->rep_prefix = 0;
-	IP = cpu->state->ip;
-	cpu->mnem[0] = '\0'; 
+	IP = ip;
+	cpu->offset = ip;
+	cpu->segment = cs;
+	cpu->str[0] = '\0'; 
 	cpu->addressing_str[0] = '\0';
 	cpu->opcode = FETCH_BYTE();
 }
@@ -1421,7 +1420,7 @@ static void i8086_decode_opcode_80(I8086_MNEM* cpu) {
 			break;
 	}
 }
-static void i8086_decode_opcode_d0(I8086_MNEM* cpu) {
+static int i8086_decode_opcode_d0(I8086_MNEM* cpu) {
 	/* 0xD0 - 0xD3 b110100VW */
 	cpu->modrm.byte = FETCH_BYTE();
 	switch (cpu->modrm.reg) {
@@ -1443,18 +1442,23 @@ static void i8086_decode_opcode_d0(I8086_MNEM* cpu) {
 		case 0b101:
 			shr(cpu);
 			break;
+		case 0b110:
+			return I8086_DECODE_UNDEFINED;
 		case 0b111:
 			sar(cpu);
 			break;
 	}
+	return I8086_DECODE_OK;
 }
-static void i8086_decode_opcode_f6(I8086_MNEM* cpu) {
+static int i8086_decode_opcode_f6(I8086_MNEM* cpu) {
 	/* F6/F7 b1111011W */
 	cpu->modrm.byte = FETCH_BYTE();
 	switch (cpu->modrm.reg) {
 		case 0b000:
 			test_rm_imm(cpu);
 			break;
+		case 0b001:
+			return I8086_DECODE_UNDEFINED;
 		case 0b010:
 			not(cpu);
 			break;
@@ -1474,33 +1478,57 @@ static void i8086_decode_opcode_f6(I8086_MNEM* cpu) {
 			idiv_rm(cpu);
 			break;
 	}
+	return I8086_DECODE_OK;
 }
-static void i8086_decode_opcode_fe(I8086_MNEM* cpu) {
+static int i8086_decode_opcode_fe(I8086_MNEM* cpu) {
 	/* FE/FF b1111111W */
 	cpu->modrm.byte = FETCH_BYTE();
-	switch (cpu->modrm.reg) {
-		case 0b000:
-			inc_rm(cpu);
-			break;
-		case 0b001:
-			dec_rm(cpu);
-			break;
-		case 0b010:
-			call_intra_indirect(cpu);
-			break;
-		case 0b011:
-			call_inter_indirect(cpu);
-			break;
-		case 0b100:
-			jmp_intra_indirect(cpu);
-			break;
-		case 0b101:
-			jmp_inter_indirect(cpu);
-			break;
-		case 0b110:
-			push_rm(cpu);
-			break;
+	if (W) {
+		switch (cpu->modrm.reg) {
+			case 0b000:
+				inc_rm(cpu);
+				break;
+			case 0b001:
+				dec_rm(cpu);
+				break;
+			case 0b010:
+				call_intra_indirect(cpu);
+				break;
+			case 0b011:
+				call_inter_indirect(cpu);
+				break;
+			case 0b100:
+				jmp_intra_indirect(cpu);
+				break;
+			case 0b101:
+				jmp_inter_indirect(cpu);
+				break;
+			case 0b110:
+				push_rm(cpu);
+				break;
+			case 0b111:
+				//return I8086_DECODE_UNDEFINED;
+		}
 	}
+	else {
+		switch (cpu->modrm.reg) {
+			case 0b000:
+				inc_rm(cpu);
+				break;
+			case 0b001:
+				dec_rm(cpu);
+				break;
+
+			case 0b010:
+			case 0b011:
+			case 0b100:
+			case 0b101:
+			case 0b110:
+			case 0b111:
+				return I8086_DECODE_UNDEFINED;
+		}
+	}
+	return I8086_DECODE_OK;
 }
 
 static int i8086_decode_opcode(I8086_MNEM* cpu) {
@@ -1879,8 +1907,7 @@ static int i8086_decode_opcode(I8086_MNEM* cpu) {
 		case 0xD1:
 		case 0xD2:
 		case 0xD3:
-			i8086_decode_opcode_d0(cpu);
-			break;
+			return i8086_decode_opcode_d0(cpu);
 		case 0xD4:
 			aam(cpu);
 			break;
@@ -1958,8 +1985,7 @@ static int i8086_decode_opcode(I8086_MNEM* cpu) {
 			break;
 		case 0xF6:
 		case 0xF7:
-			i8086_decode_opcode_f6(cpu);
-			break;
+			return i8086_decode_opcode_f6(cpu);
 		case 0xF8:
 			clc(cpu);
 			break;
@@ -1980,23 +2006,34 @@ static int i8086_decode_opcode(I8086_MNEM* cpu) {
 			break;
 		case 0xFE:
 		case 0xFF:
-			i8086_decode_opcode_fe(cpu);
-			break;
+			return i8086_decode_opcode_fe(cpu);
 		default:
 			return I8086_DECODE_UNDEFINED;
 	}
 	return I8086_DECODE_OK;
 }
 
-int i8086_mnem(I8086_MNEM* mnem) {
-	i8086_fetch(mnem);
+static int i8086_decode_instruction(I8086_MNEM* mnem) {
 	int r = 0;
 	do {
 		r = i8086_decode_opcode(mnem);
 	} while (r == I8086_DECODE_REQ_CYCLE);
 
 	if (r == I8086_DECODE_UNDEFINED) {
-		sprintf(mnem->mnem, "undefined");
+		sprintf(mnem->str, "undef op: %02X", mnem->opcode);
+		if (mnem->modrm.byte != 0) {
+			sprintf(mnem->str + strlen(mnem->str), " /%02X", mnem->modrm.reg);
+		}
 	}
 	return r;
+}
+
+int i8086_mnem(I8086_MNEM* mnem) {
+	i8086_fetch(mnem, mnem->state->segments[SEG_CS], mnem->state->ip);
+	return i8086_decode_instruction(mnem);
+}
+
+int i8086_mnem_at(I8086_MNEM* mnem, uint16_t cs, uint16_t ip) {
+	i8086_fetch(mnem, cs, ip);
+	return i8086_decode_instruction(mnem);
 }
