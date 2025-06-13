@@ -385,6 +385,11 @@ static int16_t sign_extend8_16(uint8_t value) {
 	s |= value;
 	return s;
 }
+
+static void fetch_modrm(I8086* cpu) {
+	cpu->modrm.byte = FETCH_BYTE();
+}
+
 /* Opcodes */
 
 static void add_rm_imm(I8086* cpu) {
@@ -417,7 +422,7 @@ static void add_rm_imm(I8086* cpu) {
 }
 static void add_rm_reg(I8086* cpu) {
 	/* add r/m, reg (00/01/02/03) b000000DW */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t* reg = GET_REG16(cpu->modrm.reg);
@@ -475,7 +480,7 @@ static void or_rm_imm(I8086* cpu) {
 }
 static void or_rm_reg(I8086* cpu) {
 	/* or r/m, reg (08/0A/09/0B) b000010DW */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t* reg = GET_REG16(cpu->modrm.reg);
@@ -533,7 +538,7 @@ static void adc_rm_imm(I8086* cpu) {
 }
 static void adc_rm_reg(I8086* cpu) {
 	/* adc r/m, reg (10/12/11/13) b000100DW */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t* reg = GET_REG16(cpu->modrm.reg);
@@ -591,7 +596,7 @@ static void sbb_rm_imm(I8086* cpu) {
 }
 static void sbb_rm_reg(I8086* cpu) {
 	/* sbb r/m, reg (18/1A/19/1B) b000110DW */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t* reg = GET_REG16(cpu->modrm.reg);
@@ -649,7 +654,7 @@ static void and_rm_imm(I8086* cpu) {
 }
 static void and_rm_reg(I8086* cpu) {
 	/* and r/m, reg (20/22/21/23) b001000DW */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t* reg = GET_REG16(cpu->modrm.reg);
@@ -707,7 +712,7 @@ static void sub_rm_imm(I8086* cpu) {
 }
 static void sub_rm_reg(I8086* cpu) {
 	/* sub r/m, reg (28/2A/29/2B) b001010DW */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t* reg = GET_REG16(cpu->modrm.reg);
@@ -765,7 +770,7 @@ static void xor_rm_imm(I8086* cpu) {
 }
 static void xor_rm_reg(I8086* cpu) {
 	/* xor r/m, reg (30/32/31/33) b001100DW */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t* reg = GET_REG16(cpu->modrm.reg);
@@ -823,7 +828,7 @@ static void cmp_rm_imm(I8086* cpu) {
 }
 static void cmp_rm_reg(I8086* cpu) {
 	/* cmp r/m, reg (38/39/3A/3B) b001110DW */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t* reg = GET_REG16(cpu->modrm.reg);
@@ -867,7 +872,7 @@ static void test_rm_imm(I8086* cpu) {
 }
 static void test_rm_reg(I8086* cpu) {
 	/* test r/m, reg (84/85) b1000010W */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t* reg = GET_REG16(cpu->modrm.reg);
@@ -996,7 +1001,7 @@ static void xchg_accum_reg(I8086* cpu) {
 }
 static void xchg_rm_reg(I8086* cpu) {
 	/* xchg R/M, reg16 (86/87) b1000011W */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t* reg = GET_REG16(cpu->modrm.reg);
@@ -1432,7 +1437,7 @@ static void ret_inter(I8086* cpu) {
 
 static void mov_rm_imm(I8086* cpu) {
 	/* mov r/m, imm (C6/C7) b1100011W */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t imm = FETCH_WORD();
@@ -1461,7 +1466,7 @@ static void mov_reg_imm(I8086* cpu) {
 }
 static void mov_rm_reg(I8086* cpu) {
 	/* mov r/m, reg (88/89/8A/8B) b100010DW */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (W) {
 		uint16_t* rm = modrm_get_ptr16(cpu);
 		uint16_t* reg = GET_REG16(cpu->modrm.reg);
@@ -1495,7 +1500,7 @@ static void mov_accum_mem(I8086* cpu) {
 }
 static void mov_seg(I8086* cpu) {
 	/* mov r/m, seg (8C/8E) b100011D0 */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	uint16_t* rm = modrm_get_ptr16(cpu);
 	uint16_t* reg = &cpu->segments[cpu->modrm.reg & 3];
 	get_direction(cpu, &reg, &rm);
@@ -1505,7 +1510,7 @@ static void mov_seg(I8086* cpu) {
 
 static void lea(I8086* cpu) {
 	/* lea reg16, [r/m] (8D) b10001101 */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	uint16_t* reg = GET_REG16(cpu->modrm.reg);
 	uint16_t addr = modrm_get_address(cpu);
 	*reg = addr;
@@ -1795,7 +1800,7 @@ static int scas(I8086* cpu) {
 
 static void les(I8086* cpu) {
 	/* les (C4) b11000100 */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	uint16_t* reg = GET_REG16(cpu->modrm.reg);
 	uint16_t* rm = modrm_get_ptr16(cpu);
 	*reg = *rm;
@@ -1804,7 +1809,7 @@ static void les(I8086* cpu) {
 }
 static void lds(I8086* cpu) {
 	/* lds (C5) b11000101 */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	uint16_t* reg = GET_REG16(cpu->modrm.reg);
 	uint16_t* rm = modrm_get_ptr16(cpu);
 	*reg = *rm;
@@ -1821,7 +1826,7 @@ static void xlat(I8086* cpu) {
 
 static void esc(I8086* cpu) {
 	/* esc (D8-DF R/M reg = XXX) b11010REG */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	if (cpu->modrm.mod != 0b11) {
 		uint8_t esc_opcode = ((cpu->opcode & 7) << 3) | cpu->modrm.reg;
 		uint16_t* reg = GET_REG16(cpu->opcode);
@@ -2000,7 +2005,7 @@ static void i8086_fetch(I8086* cpu) {
 /* decode opcode */
 static void i8086_decode_opcode_80(I8086* cpu) {
 	/* 0x80 - 0x83 b100000SW (Immed) */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	switch (cpu->modrm.reg) {
 		case 0b000: // ADD
 			add_rm_imm(cpu);
@@ -2030,7 +2035,7 @@ static void i8086_decode_opcode_80(I8086* cpu) {
 }
 static void i8086_decode_opcode_d0(I8086* cpu) {
 	/* 0xD0 - 0xD3 b110100VW (Shift) */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	switch (cpu->modrm.reg) {
 		case 0b000:
 			rol(cpu);
@@ -2057,7 +2062,7 @@ static void i8086_decode_opcode_d0(I8086* cpu) {
 }
 static void i8086_decode_opcode_f6(I8086* cpu) {
 	/* F6/F7 b1111011W (Group 1) */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	switch (cpu->modrm.reg) {
 		case 0b000:
 			test_rm_imm(cpu);
@@ -2084,7 +2089,7 @@ static void i8086_decode_opcode_f6(I8086* cpu) {
 }
 static void i8086_decode_opcode_fe(I8086* cpu) {
 	/* FE/FF b1111111W (Group 2) */
-	cpu->modrm.byte = FETCH_BYTE();
+	fetch_modrm(cpu);
 	switch (cpu->modrm.reg) {
 		case 0b000:
 			inc_rm(cpu);
