@@ -1335,9 +1335,14 @@ static void out_accum_dx(I8086_MNEM* cpu) {
 	}
 }
 
+static void int3(I8086_MNEM* cpu) {
+	/* interrupt CC b11001100 */
+	MNEM("int 3");
+}
+
 static void int_(I8086_MNEM* cpu) {
-	/* interrupt (CC/CD) b1100110V */
-	uint8_t type = 3;
+	/* interrupt CD b11001101 */
+	uint8_t type = 0;
  	if (cpu->opcode & 0x1) {
 		type = FETCH_BYTE();
 	}
@@ -1858,6 +1863,8 @@ static int i8086_decode_opcode(I8086_MNEM* cpu) {
 			ret_inter(cpu);
 			break;
 		case 0xCC:
+			int3(cpu);
+			break;
 		case 0xCD:
 			int_(cpu);
 			break;

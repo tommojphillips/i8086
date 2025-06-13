@@ -129,9 +129,12 @@ typedef struct I8086_FUNCS {
 
 } I8086_FUNCS;
 
+#define INTERNAL_FLAG_F1Z 0x01
+#define INTERNAL_FLAG_F1  0x02
+
 typedef struct I8086_PINS {
 	uint8_t nmi;  // pin17 - non-maskable interrupt
-	uint8_t inr;  // pin18 - interrupt request
+	uint8_t intr; // pin18 - interrupt request
 	uint8_t test; // pin23 - test
 	uint8_t lock; // pin29 - lock the bus
 	uint8_t mode; // pin33 - minimum/maximum mode
@@ -147,7 +150,9 @@ typedef struct I8086 {
 	uint8_t opcode;                              // current opcode
 	I8086_MOD_RM modrm;                          // current mod r/m byte (if applicable)
 	uint8_t segment_prefix;                      // current segment override prefix byte (if applicable)
-	uint8_t rep_prefix;                          // current rep prefix byte (if applicable)
+	uint8_t intr_type;                           // INTR Interrupt type
+	uint8_t dbz;
+	uint8_t internal_flags;                      // cpu internal flags
 	
 	uint64_t cycles;
 
@@ -171,6 +176,16 @@ void i8086_reset(I8086* cpu);
 /* Fetch, Execute the next instruction
 	cpu: the cpu instance */
 int i8086_execute(I8086* cpu);
+
+/* enable interrupts
+	cpu:    the cpu instance
+	enable: enable/disable interrupts */
+void i8086_enable_int(I8086* cpu, int enable);
+
+/* request interrupt
+	cpu:  the cpu to interrupt
+	type: the interrupt number 0-0xFF */
+void i8086_request_int(I8086* cpu, uint8_t type);
 
 #ifdef __cplusplus
 };

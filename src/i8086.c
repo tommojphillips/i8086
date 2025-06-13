@@ -17,6 +17,10 @@
 
 #define PSW cpu->status.word
 
+#define DBZ cpu->dbz
+#define NMI cpu->pins.nmi
+#define INTR cpu->pins.intr
+
 #define SF cpu->status.sf
 #define CF cpu->status.cf
 #define ZF cpu->status.zf
@@ -147,6 +151,18 @@
 #define CYCLES_RM(reg_cyc, mem_cyc) cpu->cycles += (cpu->modrm.mod == 0b11 ? reg_cyc : mem_cyc)
 #define CYCLES_RM_D(reg_cyc, mr_cyc, rm_cyc) cpu->cycles += (cpu->modrm.mod == 0b11 ? reg_cyc : !D ? mr_cyc : rm_cyc)
 
+#define INT_DBZ      0 // ITC 0
+#define INT_TRAP     1 // ITC 1
+#define INT_NMI      2 // ITC 2
+#define INT_3        3 // ITC 3
+#define INT_OVERFLOW 4 // ITC 4
+
+/* Internal flag F1. Signals that a rep prefix is in use for this decode cycle */
+#define F1  (cpu->internal_flags & INTERNAL_FLAG_F1)
+
+/* Internal flag F1Z. Signals which rep (repz/repnz) is in use for this decode cycle */
+#define F1Z (cpu->internal_flags & INTERNAL_FLAG_F1Z)
+
 void i8086_push_byte(I8086* cpu, uint8_t value) {
 	SP -= 1;
 	WRITE_BYTE(STACK_ADDR(SP), value);
@@ -164,15 +180,41 @@ void i8086_pop_word(I8086* cpu, uint16_t* value) {
 	SP += 2;
 }
 
+void i8086_request_int(I8086* cpu, uint8_t type) {
+	INTR = 1;
+	cpu->intr_type = type;
+}
 void i8086_int(I8086* cpu, uint8_t type) {
+	/* 3 things can delay an interrupt:
+		an interrupt delay micro-instruction.
+		an instruction that modifies a segment register.
+		or an instruction prefix. */
+	if (cpu->opcode == 0x8E || /* mov seg, rm */
+		cpu->opcode == 0x07 || /* pop seg */
+		cpu->opcode == 0x0F || /* pop seg */
+		cpu->opcode == 0x17 || /* pop seg */
+		cpu->opcode == 0x1F || /* pop seg */
+		cpu->opcode == 0xC4 || /* les */
+		cpu->opcode == 0xC5)   /* lds */ {
+		return;
+	}
+
 	i8086_push_word(cpu, PSW);
 	i8086_push_word(cpu, CS);
 	i8086_push_word(cpu, IP);
 	uint20_t addr = type * 4;
-	CS = READ_WORD(addr + 2);
 	IP = READ_WORD(addr);
+	CS = READ_WORD(addr + 2);
 	IF = 0;
 	TF = 0;
+}
+void i8086_enable_int(I8086* cpu, int enable) {
+	if (enable) {
+		IF = 1;
+	}
+	else {
+		IF = 0;
+	}
 }
 
 /* Swap pointers if 'D' bit is set in opcode bXXXXXXDX */
@@ -1559,12 +1601,18 @@ static void idiv_rm(I8086* cpu) {
 	}
 }
 
-#define REP_NONE     0xFF
-#define REP_NOT_ZERO 0
-#define REP_ZERO     1
-
 static int movs(I8086* cpu) {
 	/* movs (A4/A5) b1010010W */
+
+	/* Rep prefix check */
+	if (F1) {
+		if (CX == 0) {
+			return I8086_DECODE_OK;
+		}
+		CX -= 1;
+	}
+
+	/* Do string operation */
 	if (W) {
 		uint16_t* src = GET_MEM_PTR(DATA_ADDR(SI));
 		uint16_t* dest = GET_MEM_PTR(EXTRA_ADDR(DI));
@@ -1578,6 +1626,7 @@ static int movs(I8086* cpu) {
 		CYCLES(18);
 	}
 
+	/* Adjust si/di delta */
 	if (DF) {
 		SI -= (1 << W);
 		DI -= (1 << W);
@@ -1587,16 +1636,25 @@ static int movs(I8086* cpu) {
 		DI += (1 << W);
 	}
 
-	if (cpu->rep_prefix != 0xFF) {
-		CX -= 1;
-		if (CX > 0) {
-			return I8086_DECODE_REQ_CYCLE;
-		}
+	/* Rep prefix check */
+	if (F1) {
+		//return I8086_DECODE_REQ_CYCLE;
+		IP -= 2; /* Allow interrupts */
 	}
 	return I8086_DECODE_OK;
 }
 static int stos(I8086* cpu) {
 	/* stos (AA/AB) b1010101W */
+
+	/* Rep prefix check */
+	if (F1) {
+		if (CX == 0) {
+			return I8086_DECODE_OK;
+		}
+		CX -= 1;
+	}
+
+	/* Do string operation */
 	if (W) {
 		WRITE_WORD(EXTRA_ADDR(DI), AX);
 		CYCLES(15);
@@ -1606,6 +1664,7 @@ static int stos(I8086* cpu) {
 		CYCLES(11);
 	}
 
+	/* Adjust si/di delta */
 	if (DF) {
 		DI -= (1 << W);
 	}
@@ -1613,51 +1672,73 @@ static int stos(I8086* cpu) {
 		DI += (1 << W);
 	}
 
-	if (cpu->rep_prefix != 0xFF) {
-		CX -= 1;
-		if (CX > 0) {
-			return I8086_DECODE_REQ_CYCLE;
+	/* Rep prefix check */
+	if (F1) {
+		//return I8086_DECODE_REQ_CYCLE;
+		IP -= 2; /* Allow interrupts */
 		}
-	}
 	return I8086_DECODE_OK;
 }
 static int lods(I8086* cpu) {
 	/* lods (AC/AD) b1010110W */
+
+	/* Rep prefix check */
+	if (F1) {
+		if (CX == 0) {
+			return I8086_DECODE_OK;
+		}
+		CX -= 1;
+	}
+
+	/* Do string operation */
 	if (W) {
 		AX = READ_WORD(DATA_ADDR(SI));
 	}
 	else {
 		AL = READ_BYTE(DATA_ADDR(SI));		
 	}
+	CYCLES(16);
 
+	/* Adjust si/di delta */
 	if (DF) {
 		SI -= (1 << W);
 	}
 	else {
 		SI += (1 << W);
 	}
-	CYCLES(16);
-	if (cpu->rep_prefix != 0xFF) {
-		CX -= 1;
-		if (CX > 0) {
-			return I8086_DECODE_REQ_CYCLE;
-		}
+
+	/* Rep prefix check */
+	if (F1) {
+		//return I8086_DECODE_REQ_CYCLE;
+		IP -= 2; /* Allow interrupts */
 	}
 	return I8086_DECODE_OK;
 }
 static int cmps(I8086* cpu) {
 	/* cmps (A6/A7) b1010011W */
+
+	/* Rep prefix check */
+	if (F1) {
+		if (CX == 0) {
+			return I8086_DECODE_OK;
+		}
+		CX -= 1;
+	}
+
+	/* Do string operation */
 	if (W) {
 		uint16_t* src = GET_MEM_PTR(DATA_ADDR(SI));
 		uint16_t* dest = GET_MEM_PTR(EXTRA_ADDR(DI));
-		alu_cmp16(cpu, *src, *dest);
+		alu_cmp16(cpu, *dest, *src);
 	}
 	else {
 		uint8_t* src = GET_MEM_PTR(DATA_ADDR(SI));
 		uint8_t* dest = GET_MEM_PTR(EXTRA_ADDR(DI));
-		alu_cmp8(cpu, *src, *dest);
+		alu_cmp8(cpu, *dest, *src);
 	}
+	CYCLES(30);
 
+	/* Adjust si/di delta */
 	if (DF) {
 		SI -= (1 << W);
 		DI -= (1 << W);
@@ -1666,38 +1747,48 @@ static int cmps(I8086* cpu) {
 		SI += (1 << W);
 		DI += (1 << W);
 	}
-	CYCLES(30);
-	if (cpu->rep_prefix != 0xFF) {
-		CX -= 1;
-		if (CX > 0 && ZF == cpu->rep_prefix) {
-			return I8086_DECODE_REQ_CYCLE;
-		}
+
+	/* Rep prefix check */
+	if (F1 && ZF == F1Z) {
+		//return I8086_DECODE_REQ_CYCLE;
+		IP -= 2; /* Allow interrupts */
 	}
 	return I8086_DECODE_OK;
 }
 static int scas(I8086* cpu) {
 	/* scas (AE/AF) b1010111W */
+
+	/* Rep prefix check */
+	if (F1) {
+		if (CX == 0) {
+			return I8086_DECODE_OK;
+		}
+		CX -= 1;
+	}
+
+	/* Do string operation */
 	if (W) {
 		uint16_t* mem = GET_MEM_PTR(EXTRA_ADDR(DI));
-		alu_sub16(cpu, &AX, *mem);
+		alu_cmp16(cpu, AX, *mem);
 	}
 	else {
 		uint8_t* mem = GET_MEM_PTR(EXTRA_ADDR(DI));
-		alu_sub8(cpu, &AL, *mem);
+		alu_cmp8(cpu, AL, *mem);
 	}
+	CYCLES(19);
 
+	/* Adjust si/di delta */
 	if (DF) {
 		DI -= (1 << W);
 	}
 	else {
 		DI += (1 << W);
 	}
-	CYCLES(19);
-	if (cpu->rep_prefix != 0xFF) {
-		CX -= 1;
-		if (CX > 0 && ZF == cpu->rep_prefix) {
-			return I8086_DECODE_REQ_CYCLE;
-		}
+
+	/* Rep prefix check */
+	if (F1 && ZF == F1Z) {
+		//return I8086_DECODE_REQ_CYCLE;
+		IP -= 2; /* Allow interrupts */
 	}
 	return I8086_DECODE_OK;
 }
@@ -1822,22 +1913,20 @@ static void out_accum_dx(I8086* cpu) {
 }
 
 static void int_(I8086* cpu) {
-	/* interrupt (CC/CD) b1100110V */
-	uint8_t type = 0;
- 	if (cpu->opcode & 0x1) {
-		type = FETCH_BYTE();
+	/* interrupt CD b11001101 */	
+	uint8_t type = FETCH_BYTE();
+	i8086_int(cpu, type);
 		CYCLES(71);
 	}
-	else {
-		type = 3;
+static void int3(I8086* cpu) {
+	/* interrupt CC b11001100 */
+	i8086_int(cpu, INT_3);
 		CYCLES(72);
 	}
-	i8086_int(cpu, type);
-}
 static void into(I8086* cpu) {
 	/* interrupt on overflow (CE) b11001110 */
 	if (OF) {
-		i8086_int(cpu, 4);
+		i8086_int(cpu, INT_OVERFLOW);
 		CYCLES(73);
 	}
 	else {
@@ -1845,7 +1934,7 @@ static void into(I8086* cpu) {
 	}
 }
 static void iret(I8086* cpu) {
-	/* interrupt on return (CF) b11001111 */
+	/* return from interrupt (CF) b11001111 */
 	i8086_pop_word(cpu, &IP);
 	i8086_pop_word(cpu, &CS);
 	i8086_pop_word(cpu, &PSW);
@@ -1855,7 +1944,10 @@ static void iret(I8086* cpu) {
 /* prefix byte */
 static int rep(I8086* cpu) {
 	/* rep/repz/repnz (F2/F3) b1111001Z */
-	cpu->rep_prefix = cpu->opcode & 0x1;
+	cpu->internal_flags |= INTERNAL_FLAG_F1;    /* Set F1 */
+	cpu->internal_flags &= ~INTERNAL_FLAG_F1Z;  /* Clr F1Z */
+	cpu->internal_flags |= (cpu->opcode & 0x1); /* Set F1Z */
+	
 	cpu->opcode = FETCH_BYTE();
 	CYCLES(9);
 	return I8086_DECODE_REQ_CYCLE;
@@ -1874,11 +1966,34 @@ static int lock(I8086* cpu) {
 	return I8086_DECODE_REQ_CYCLE;
 }
 
+static void i8086_check_interrupts(I8086* cpu) {
+	if (NMI) {
+		NMI = 0;
+		i8086_int(cpu, INT_NMI);
+	}
+	else {
+		uint8_t tf = TF;
+
+		if (DBZ) {
+			DBZ = 0;
+			i8086_int(cpu, INT_DBZ);
+		}
+
+		if (tf) {
+			i8086_int(cpu, INT_TRAP);
+		}
+		else if (IF && INTR) {
+			INTR = 0;
+			i8086_int(cpu, cpu->intr_type);
+		}
+	}
+}
+
 /* Fetch next opcode */
 static void i8086_fetch(I8086* cpu) {
+	cpu->internal_flags = 0;
 	cpu->modrm.byte = 0;
 	cpu->segment_prefix = 0xFF;
-	cpu->rep_prefix = 0xFF;
 	cpu->opcode = FETCH_BYTE();
 }
 
@@ -2350,6 +2465,8 @@ static int i8086_decode_opcode(I8086 * cpu) {
 			ret_inter(cpu);
 			break;
 		case 0xCC:
+			int3(cpu);
+			break;
 		case 0xCD:
 			int_(cpu);
 			break;
@@ -2500,9 +2617,18 @@ void i8086_reset(I8086* cpu) {
 	cpu->opcode = 0;
 	cpu->modrm.byte = 0;
 	cpu->cycles = 0;
+	cpu->internal_flags = 0;
+	cpu->dbz = 0;
+	cpu->segment_prefix = 0;
+
+	cpu->pins.intr = 0;
+	cpu->pins.mode = 0;
+	cpu->pins.nmi = 0;
+	cpu->pins.test = 0;
 }
 
 int i8086_execute(I8086* cpu) {
+	i8086_check_interrupts(cpu);
 	i8086_fetch(cpu);
 	 
 	int r = 0;
