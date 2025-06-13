@@ -1043,7 +1043,7 @@ static void cwd(I8086* cpu) {
 static void wait(I8086* cpu) {
 	/* wait (9B) b10011011 */
 	if (!cpu->pins.test) {
-		IP -= 1;
+		//IP -= 1;
 	}
 	CYCLES(4);
 }
@@ -1549,14 +1549,16 @@ static void mul_rm(I8086* cpu) {
 	if (W) {
 		uint16_t* mul = modrm_get_ptr16(cpu);
 		uint32_t r = AX * *mul;
-		AX = ((r >> 16) & 0xFFFF);
-		DX = (r & 0xFFFF);
+		AX = (r & 0xFFFF);
+		DX = ((r >> 16) & 0xFFFF);
+
 		CYCLES_RM(118, 224);
 	}
 	else {
 		uint8_t* mul = modrm_get_ptr8(cpu);
-		uint8_t al = AL;
-		AX = al * *mul;
+		uint16_t r = AL * *mul;
+		AX = r;
+
 		CYCLES_RM(70, 76);
 	}
 }
@@ -1565,29 +1567,59 @@ static void imul_rm(I8086* cpu) {
 	if (W) {
 		int16_t* mul = (int16_t*)modrm_get_ptr16(cpu);
 		int32_t r = AX * *mul;
-		AX = ((r >> 16) & 0xFFFF);
-		DX = (r & 0xFFFF);
+		AX = (r & 0xFFFF);
+		DX = ((r >> 16) & 0xFFFF);
 	}
 	else {
 		int8_t* mul = (int8_t*)modrm_get_ptr8(cpu);
-		int8_t al = AL;
-		AX = al * *mul;
+		int16_t r = AL * *mul;
+		AX = r;
+	}
+
+	/* undocumented* 
+		The multiply microcode reuses the F1 flag to track the
+		sign of the input values, toggling F1 for each negative value.
+		If F1 is set, the product at the end is negated */
+	if (F1) {
+		AX = ~AX;
 	}
 }
 static void div_rm(I8086* cpu) {
 	/* div r/m (F6/F7, R/M reg = b110) b1111011W */
 	if (W) {
 		uint16_t* divider = modrm_get_ptr16(cpu);
-		uint32_t dividend = (AX << 16) | DX;
-		AX = (dividend / *divider) & 0xFFFF; // quotient
-		DX = dividend % *divider; // remainder
+		if (*divider == 0) {
+			DBZ = 1;
+		}
+		else {
+			uint32_t dividend = (DX << 16) | AX;
+			uint32_t quotient = (dividend / *divider);
+			if (quotient > 0xFFFF) {
+				DBZ = 1; /* quotient too large */
+			}
+			else {
+				AX = quotient & 0xFFFF;   // quotient
+				DX = dividend % *divider; // remainder
+			}
+		}
 		CYCLES_RM(144, 150);
 	}
 	else {
 		uint8_t* divider = modrm_get_ptr8(cpu);
-		uint16_t dividend = AX;
-		AH = (dividend / *divider) & 0xFF; // quotient
-		AL = dividend % *divider; // remainder
+		if (*divider == 0) {
+			DBZ = 1;
+		}
+		else {
+			uint16_t dividend = AX;
+			uint16_t quotient = (dividend / *divider);
+			if (quotient > 0xFF) {
+				DBZ = 1; /* quotient too large */
+			}
+			else {
+				AL = quotient & 0xFF;     // quotient
+				AH = dividend % *divider; // remainder
+			}
+		}
 		CYCLES_RM(80, 86);
 	}
 }
@@ -1595,17 +1627,47 @@ static void idiv_rm(I8086* cpu) {
 	/* idiv r/m (F6/F7, R/M reg = b111) b1111011W */
 	if (W) {
 		int16_t* divider = (int16_t*)modrm_get_ptr16(cpu);
-		int32_t dividend = (AX << 16) | DX;
-		AX = (dividend / *divider) & 0xFFFF; // quotient
-		DX = dividend % *divider; // remainder
+		if (*divider == 0) {
+			DBZ = 1;
+		}
+		else {
+			int32_t dividend = (DX << 16) | AX;
+			int32_t quotient = dividend / *divider;
+			if (quotient > 0x7FFF || quotient < 0x8000) {
+				DBZ = 1;
+			}
+			else {
+				AX = quotient & 0xFFFF;   // quotient
+				DX = dividend % *divider; // remainder
+			}
+		}
 		CYCLES_RM(128, 134);
 	}
 	else {
 		int8_t* divider = (int8_t*)modrm_get_ptr8(cpu);
-		int16_t dividend = AX;
-		AL = (dividend / *divider) & 0xFF; // quotient
-		AH = dividend % *divider; // remainder
+		if (*divider == 0) {
+			DBZ = 1;
+		}
+		else {
+			int16_t dividend = AX;
+			int16_t quotient = dividend / *divider;
+			if (quotient > 0x7F || quotient < 0x80) {
+				DBZ = 1;
+			}
+			else {
+				AL = quotient & 0xFF;     // quotient
+				AH = dividend % *divider; // remainder
+			}
+		}
 		CYCLES_RM(80, 86);
+	}
+
+	/* undocumented* 
+		The divide mircocode reuses the F1 flag to track the
+		sign of the input values, toggling F1 for each negative value.
+		If F1 is set, the quotient at the end is negated */
+	if (F1) {
+		AX = ~AX;
 	}
 }
 
@@ -1684,7 +1746,7 @@ static int stos(I8086* cpu) {
 	if (F1) {
 		//return I8086_DECODE_REQ_CYCLE;
 		IP -= 2; /* Allow interrupts */
-		}
+	}
 	return I8086_DECODE_OK;
 }
 static int lods(I8086* cpu) {
@@ -1703,7 +1765,7 @@ static int lods(I8086* cpu) {
 		AX = READ_WORD(DATA_ADDR(SI));
 	}
 	else {
-		AL = READ_BYTE(DATA_ADDR(SI));		
+		AL = READ_BYTE(DATA_ADDR(SI));
 	}
 	CYCLES(16);
 
@@ -1924,13 +1986,13 @@ static void int_(I8086* cpu) {
 	/* interrupt CD b11001101 */	
 	uint8_t type = FETCH_BYTE();
 	i8086_int(cpu, type);
-		CYCLES(71);
-	}
+	CYCLES(71);	
+}
 static void int3(I8086* cpu) {
 	/* interrupt CC b11001100 */
 	i8086_int(cpu, INT_3);
-		CYCLES(72);
-	}
+	CYCLES(72);
+}
 static void into(I8086* cpu) {
 	/* interrupt on overflow (CE) b11001110 */
 	if (OF) {
@@ -2100,28 +2162,28 @@ static int i8086_decode_opcode_fe(I8086* cpu) {
 	/* FE/FF b1111111W (Group 2) */
 	fetch_modrm(cpu);
 	if (W) {
-	switch (cpu->modrm.reg) {
-		case 0b000:
-			inc_rm(cpu);
-			break;
-		case 0b001:
-			dec_rm(cpu);
-			break;
-		case 0b010:
-			call_intra_indirect(cpu);
-			break;
-		case 0b011:
-			call_inter_indirect(cpu);
-			break;
-		case 0b100:
-			jmp_intra_indirect(cpu);
-			break;
-		case 0b101:
-			jmp_inter_indirect(cpu);
-			break;
-		case 0b110:
-			push_rm(cpu);
-			break;
+		switch (cpu->modrm.reg) {
+			case 0b000:
+				inc_rm(cpu);
+				break;
+			case 0b001:
+				dec_rm(cpu);
+				break;
+			case 0b010:
+				call_intra_indirect(cpu);
+				break;
+			case 0b011:
+				call_inter_indirect(cpu);
+				break;
+			case 0b100:
+				jmp_intra_indirect(cpu);
+				break;
+			case 0b101:
+				jmp_inter_indirect(cpu);
+				break;
+			case 0b110:
+				push_rm(cpu);
+				break;
 			
 			case 0b111:
 				return I8086_DECODE_UNDEFINED;
@@ -2672,6 +2734,6 @@ void i8086_reset(I8086* cpu) {
 
 int i8086_execute(I8086* cpu) {
 	i8086_check_interrupts(cpu);
-	i8086_fetch(cpu);
+	i8086_fetch(cpu);	 
 	return i8086_decode_instruction(cpu);
 }
