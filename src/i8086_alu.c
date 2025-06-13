@@ -27,10 +27,12 @@
 	pf ^= (pf >> 4); \
 	pf ^= (pf >> 2); \
 	pf ^= (pf >> 1); \
-	PF = (~pf & 1) ^ 1; }
+	PF = (~pf) & 1; }
 
 #define SET_AF_ADD8(x,y,r) AF = (((x) ^ (y) ^ (r)) & 0x10) == 0x10
 #define SET_AF_SUB8(x,y,r) AF = (((x) ^ (y) ^ (r)) & 0x10) == 0
+#define SET_OF_ADD8(x,y,r) OF = ((((r) ^ (x)) & ((r) ^ (y))) & 0x80) == 0x80
+#define SET_OF_SUB8(x,y,r) OF = ((((x) ^ (y)) & ((x) ^ (r))) & 0x80) != 0
 
 #define SET_CF16(r) CF = (r) > 0xFFFF
 #define SET_OF16(r) OF = (r) > 0x7FFF
@@ -42,6 +44,8 @@
 
 #define SET_AF_ADD16(x,y,r) AF = (((x) ^ (y) ^ (r)) & 0x100) == 0x100
 #define SET_AF_SUB16(x,y,r) AF = (((x) ^ (y) ^ (r)) & 0x100) == 0
+#define SET_OF_ADD16(x,y,r) OF = ((((r) ^ (x)) & ((r) ^ (y))) & 0x8000) == 0x8000
+#define SET_OF_SUB16(x,y,r) OF = ((((x) ^ (y)) & ((x) ^ (r))) & 0x8000) != 0
 
 void alu_daa(I8086* cpu, uint8_t* x1) {
 	uint8_t correction = 0;
@@ -98,8 +102,14 @@ void alu_aas(I8086* cpu, uint8_t* l, uint8_t* h) {
 	}
 }
 void alu_aad(I8086* cpu, uint8_t* l, uint8_t* h, uint8_t divisor) {
-	*h = (*l / divisor);
-	*l = (*l % divisor);
+	if (divisor != 0) {
+		*h = (*l / divisor);
+		*l = (*l % divisor);
+	}
+	else {
+		*h = 0;
+		*l = 0;
+	}
 	SET_CF8(*h);
 	SET_OF8(*h);
 	SET_PF8(*l);
@@ -121,9 +131,9 @@ void alu_aam(I8086* cpu, uint8_t* l, uint8_t* h, uint8_t divisor) {
 void alu_add8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 	uint16_t tmp = (*x1 + x2);
 	SET_AF_ADD8(*x1, x2, tmp);
+	SET_OF_ADD8(*x1, x2, tmp);
 	SET_CF8(tmp);
 	*x1 = (tmp & 0xFF);
-	SET_OF8(*x1);
 	SET_SF8(*x1);
 	SET_PF8(*x1);
 	SET_ZF8(*x1);
@@ -131,9 +141,9 @@ void alu_add8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 void alu_adc8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 	uint16_t tmp = (*x1 + x2 + CF);
 	SET_AF_ADD8(*x1, x2, tmp);
+	SET_OF_ADD8(*x1, x2, tmp);
 	SET_CF8(tmp);
 	*x1 = (tmp & 0xFF);
-	SET_OF8(*x1);
 	SET_SF8(*x1);
 	SET_PF8(*x1);
 	SET_ZF8(*x1);
@@ -141,9 +151,9 @@ void alu_adc8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 void alu_sub8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 	uint16_t tmp = (*x1 - x2);
 	SET_AF_SUB8(*x1, x2, tmp);
+	SET_OF_SUB8(*x1, x2, tmp);
 	SET_CF8(tmp);
 	*x1 = (tmp & 0xFF);
-	SET_OF8(*x1);
 	SET_SF8(*x1);
 	SET_PF8(*x1);
 	SET_ZF8(*x1);
@@ -151,9 +161,9 @@ void alu_sub8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 void alu_sbb8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 	uint16_t tmp = (*x1 - x2 - CF);
 	SET_AF_SUB8(*x1, x2, tmp);
+	SET_OF_SUB8(*x1, x2, tmp);
 	SET_CF8(tmp);
 	*x1 = (tmp & 0xFF);
-	SET_OF8(*x1);
 	SET_SF8(*x1);
 	SET_PF8(*x1);
 	SET_ZF8(*x1);
@@ -197,16 +207,20 @@ void alu_rcl8(I8086* cpu, uint8_t* x1, uint8_t count) {
 	for (int i = 0; i < count; ++i) {
 		uint8_t cf = CF;
 		CF = (*x1 >> 7) & 1;
-		OF = CF != ((*x1 >> 6) & 1);
 		*x1 = (*x1 << 1) | cf;
+	}
+	if (count == 1) {
+		OF = CF ^ ((*x1 >> 7) & 1);
 	}
 }
 void alu_rcr8(I8086* cpu, uint8_t* x1, uint8_t count) {
 	for (int i = 0; i < count; ++i) {
 		uint8_t cf = CF;
 		CF = (*x1 & 1);
-		OF = CF != ((*x1 >> 7) & 1);
 		*x1 = (*x1 >> 1) | (cf << 7);
+	}
+	if (count == 1) {
+		OF = (*x1 >> 7) ^ ((*x1 >> 6) & 1);
 	}
 }
 void alu_rol8(I8086* cpu, uint8_t* x1, uint8_t count) {
@@ -214,7 +228,17 @@ void alu_rol8(I8086* cpu, uint8_t* x1, uint8_t count) {
 		uint8_t cf = (*x1 >> 7) & 1;
 		CF = cf;
 		*x1 = (*x1 << 1) | cf;
-		// OF ?
+	}
+	if (count == 1) {
+		if ((*x1 & 0x80) && CF) {
+			OF = 1;
+		}
+		else {
+			OF = 0;
+		}
+	}
+	else {
+		OF = 0;
 	}
 }
 void alu_ror8(I8086* cpu, uint8_t* x1, uint8_t count) {
@@ -222,46 +246,46 @@ void alu_ror8(I8086* cpu, uint8_t* x1, uint8_t count) {
 		uint8_t cf = (*x1 & 1);
 		CF = cf;
 		*x1 = (*x1 >> 1) | (cf << 7);
-		// OF ?
+	}
+	if (count == 1) {
+		OF = (*x1 >> 7) ^ ((*x1 >> 6) & 1);
 	}
 }
 void alu_shl8(I8086* cpu, uint8_t* x1, uint8_t count) {
-	if (count > 0) {
-		for (int i = 0; i < count; ++i) {
-			CF = (*x1 >> 7) & 1;
-			OF = CF != ((*x1 >> 6) & 1);
-			*x1 <<= 1;
-		}
-		SET_SF8(*x1);
-		SET_PF8(*x1);
-		SET_ZF8(*x1);
+	for (int i = 0; i < count; ++i) {
+		CF = (*x1 >> 7) & 1;			
+		*x1 <<= 1;
 	}
+	if (count == 1) {
+		OF = ((*x1 >> 7) ^ ((*x1 >> 6) & 1));
+	}
+	SET_SF8(*x1);
+	SET_PF8(*x1);
+	SET_ZF8(*x1);	
 }
 void alu_shr8(I8086* cpu, uint8_t* x1, uint8_t count) {
-	if (count > 0) {
-		for (int i = 0; i < count; ++i) {
-			CF = (*x1 & 1);
-			OF = (*x1 >> 7) & 1;
-			*x1 >>= 1;
-		}
-		SET_SF8(*x1);
-		SET_PF8(*x1);
-		SET_ZF8(*x1);
+	if (count == 1) {
+		OF = (*x1 >> 7) & 1;
 	}
+	for (int i = 0; i < count; ++i) {
+		CF = (*x1 & 1);
+		*x1 >>= 1;
+	}
+	SET_SF8(*x1);
+	SET_PF8(*x1);
+	SET_ZF8(*x1);
 }
 void alu_sar8(I8086* cpu, uint8_t* x1, uint8_t count) {
-	if (count > 0) {
-		for (int i = 0; i < count; ++i) {
-			CF = (*x1 & 1);
-			uint8_t ms = (*x1 & 7);
-			*x1 >>= 1;
-			*x1 |= ms;
-		}
-		SET_SF8(*x1);
-		SET_PF8(*x1);
-		SET_ZF8(*x1);
-		OF = 0;
+	for (int i = 0; i < count; ++i) {
+		CF = (*x1 & 1);
+		uint8_t ms = (*x1 & 0x80);
+		*x1 >>= 1;
+		*x1 |= ms;
 	}
+	SET_SF8(*x1);
+	SET_PF8(*x1);
+	SET_ZF8(*x1);
+	OF = 0;
 }
 
 void alu_inc8(I8086* cpu, uint8_t* x1) {
@@ -313,9 +337,9 @@ void alu_or16(I8086*  cpu, uint16_t* x1, uint16_t x2) {
 void alu_add16(I8086* cpu, uint16_t* x1, uint16_t x2) {
 	uint32_t tmp = (*x1 + x2);
 	SET_AF_ADD16(*x1, x2, tmp);
+	SET_OF_ADD16(*x1, x2, tmp);
 	SET_CF16(tmp);
 	*x1 = (tmp & 0xFFFF);
-	SET_OF16(*x1);
 	SET_SF16(*x1);
 	SET_PF16(*x1);
 	SET_ZF16(*x1);
@@ -323,9 +347,9 @@ void alu_add16(I8086* cpu, uint16_t* x1, uint16_t x2) {
 void alu_adc16(I8086* cpu, uint16_t* x1, uint16_t x2) {
 	uint32_t tmp = (*x1 + x2 + CF);
 	SET_AF_ADD16(*x1, x2, tmp);
+	SET_OF_ADD16(*x1, x2, tmp);
 	SET_CF16(tmp);
 	*x1 = (tmp & 0xFFFF);
-	SET_OF16(*x1);
 	SET_SF16(*x1);
 	SET_PF16(*x1);
 	SET_ZF16(*x1);
@@ -333,9 +357,9 @@ void alu_adc16(I8086* cpu, uint16_t* x1, uint16_t x2) {
 void alu_sub16(I8086* cpu, uint16_t* x1, uint16_t x2) {
 	uint32_t tmp = (*x1 - x2);
 	SET_AF_SUB16(*x1, x2, tmp);
+	SET_OF_SUB16(*x1, x2, tmp);
 	SET_CF16(tmp);
 	*x1 = (tmp & 0xFFFF);
-	SET_OF16(*x1);
 	SET_SF16(*x1);
 	SET_PF16(*x1);
 	SET_ZF16(*x1);
@@ -343,9 +367,9 @@ void alu_sub16(I8086* cpu, uint16_t* x1, uint16_t x2) {
 void alu_sbb16(I8086* cpu, uint16_t* x1, uint16_t x2) {
 	uint32_t tmp = (*x1 - x2 - CF);
 	SET_AF_SUB16(*x1, x2, tmp);
+	SET_OF_SUB16(*x1, x2, tmp);
 	SET_CF16(tmp);
 	*x1 = (tmp & 0xFFFF);
-	SET_OF16(*x1);
 	SET_SF16(*x1);
 	SET_PF16(*x1);
 	SET_ZF16(*x1);
@@ -362,16 +386,20 @@ void alu_rcl16(I8086* cpu, uint16_t* x1, uint8_t count) {
 	for (int i = 0; i < count; ++i) {
 		uint8_t cf = CF;
 		CF = (*x1 >> 15) & 1;
-		OF = CF != ((*x1 >> 14) & 1);
 		*x1 = (*x1 << 1) | cf;
+	}
+	if (count == 1) {
+		OF = CF ^ ((*x1 >> 15) & 1);
 	}
 }
 void alu_rcr16(I8086* cpu, uint16_t* x1, uint8_t count) {
 	for (int i = 0; i < count; ++i) {
 		uint8_t cf = CF;
-		CF = (*x1 & 1);
-		OF = CF != ((*x1 >> 15) & 1);
+		CF = (*x1 & 1);		
 		*x1 = (*x1 >> 1) | (cf << 15);
+	}
+	if (count == 1) {
+		OF = (*x1 >> 15) ^ ((*x1 >> 14) & 1);
 	}
 }
 void alu_rol16(I8086* cpu, uint16_t* x1, uint8_t count) {
@@ -379,7 +407,9 @@ void alu_rol16(I8086* cpu, uint16_t* x1, uint8_t count) {
 		uint8_t cf = (*x1 >> 15) & 1;
 		CF = cf;
 		*x1 = (*x1 << 1) | cf;
-		// OF ?
+	}
+	if (count == 1) {
+		OF = CF ^ ((*x1 >> 15) & 1);
 	}
 }
 void alu_ror16(I8086* cpu, uint16_t* x1, uint8_t count) {
@@ -387,46 +417,48 @@ void alu_ror16(I8086* cpu, uint16_t* x1, uint8_t count) {
 		uint8_t cf = (*x1 & 1);
 		CF = cf;
 		*x1 = (*x1 >> 1) | (cf << 15);
-		// OF ?
+	}
+	if (count == 1) {
+		OF = (*x1 >> 15) ^ ((*x1 >> 14) & 1);
 	}
 }
 void alu_shl16(I8086* cpu, uint16_t* x1, uint8_t count) {
-	if (count > 0) {
-		for (int i = 0; i < count; ++i) {
-			CF = (*x1 >> 15) & 1;
-			OF = CF == ((*x1 >> 14) & 1);
-			*x1 <<= 1;
-		}
-		SET_SF16(*x1);
-		SET_PF16(*x1);
-		SET_ZF16(*x1);
+
+	for (int i = 0; i < count; ++i) {
+		CF = (*x1 >> 15) & 1;
+		*x1 <<= 1;
 	}
+	if (count == 1) {
+		OF = ((*x1 >> 15) ^ ((*x1 >> 14) & 1));
+	}
+	SET_SF16(*x1);
+	SET_PF16(*x1);
+	SET_ZF16(*x1);
 }
 void alu_shr16(I8086* cpu, uint16_t* x1, uint8_t count) {
-	if (count > 0) {
-		for (int i = 0; i < count; ++i) {
-			CF = (*x1 & 1);
-			OF = (*x1 >> 15) & 1;
-			*x1 >>= 1;
-		}
-		SET_SF16(*x1);
-		SET_PF16(*x1);
-		SET_ZF16(*x1);
+	if (count == 1) {
+		OF = (*x1 >> 15) & 1;
 	}
+	for (int i = 0; i < count; ++i) {
+		CF = (*x1 & 1);
+		*x1 >>= 1;
+	}
+	SET_SF16(*x1);
+	SET_PF16(*x1);
+	SET_ZF16(*x1);
+	
 }
-void alu_sar16(I8086* cpu, uint16_t* x1, uint8_t count) {
-	if (count > 0) {
-		for (int i = 0; i < count; ++i) {
-			CF = (*x1 & 1);
-			uint8_t ms = (*x1 & 15);
-			*x1 >>= 1;
-			*x1 |= ms;
-		}
-		SET_SF16(*x1);
-		SET_PF16(*x1);
-		SET_ZF16(*x1);
-		OF = 0;
+void alu_sar16(I8086* cpu, uint16_t* x1, uint8_t count) {	
+	for (int i = 0; i < count; ++i) {
+		CF = (*x1 & 1);
+		uint16_t ms = (*x1 & 0x8000);
+		*x1 >>= 1;
+		*x1 |= ms;
 	}
+	SET_SF16(*x1);
+	SET_PF16(*x1);
+	SET_ZF16(*x1);
+	OF = 0;	
 }
 
 void alu_inc16(I8086* cpu, uint16_t* x1) {
