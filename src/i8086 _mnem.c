@@ -10,20 +10,28 @@
 #include "i8086.h"
 #include "i8086_mnem.h"
 
+ //#define CONVERT_REL_TO_ABS 
+
+#ifdef CONVERT_REL_TO_ABS
+#include "sign_extend.h"
+/* Relative offset to Absolute offset*/
+#define TO_LABEL_OFFSET(x) (IP+x)
+#endif
+
  /* define IP as counter */
-#define IP  cpu->counter
+#define IP  (cpu->offset+cpu->counter)
 
 /* Get 20bit address SEG:ADDR */
-#define GET_ADDR(addr) (((cpu->segment << 4) + addr) & 0xFFFFF)
+#define GET_ADDR(addr) (((cpu->segment << 4) + (addr)))
 
  /* Get 20bit code segment address CS:ADDR */
 #define IP_ADDR            GET_ADDR(IP)
 
 /* Fetch word at CS:IP. Inc IP by 2 */
-#define FETCH_BYTE()       cpu->state->funcs.read_mem_byte(IP_ADDR); IP += 1
+#define FETCH_BYTE()       cpu->state->funcs.read_mem_byte(IP_ADDR); cpu->counter += 1
 
 /* Fetch word at CS:IP. Inc IP by 2 */
-#define FETCH_WORD()       cpu->state->funcs.read_mem_word(IP_ADDR); IP += 2
+#define FETCH_WORD()       cpu->state->funcs.read_mem_word(IP_ADDR); cpu->counter += 2
 
 /* Get 8bit register mnemonic */
 #define GET_REG8(reg)      reg8_mnem[reg & 7]
@@ -52,8 +60,8 @@
 // jump condition
 #define CCCC (cpu->opcode & 0x0F)
 
-#define LABEL_OFFSET(x) (IP+x)
-//#define LABEL_OFFSET(x) (x)
+#define MNEM0_F(mem, x) sprintf(mem+strlen(mem), x)
+#define MNEM0(x)        MNEM0_F(cpu->str, x)
 
 #define MNEM_F(mem, x, ...) sprintf(mem+strlen(mem), x, __VA_ARGS__)
 #define MNEM(x, ...) MNEM_F(cpu->str, x, __VA_ARGS__)
@@ -81,28 +89,28 @@ static void get_direction(I8086_MNEM* cpu, void** ptr1, void** ptr2) {
 static void get_base_mnem(I8086_MNEM* cpu, char* t) {
 	switch (cpu->modrm.rm) {
 		case 0b000: // base rel indexed - BX + SI
-			MNEM_F(t, "bx + si");
+			MNEM_F(t, "%s + %s", GET_REG16(REG_BX), GET_REG16(REG_SI));
 			break;
 		case 0b001: // base rel indexed - BX + DI
-			MNEM_F(t, "bx + di");
+			MNEM_F(t, "%s + %s", GET_REG16(REG_BX), GET_REG16(REG_DI));
 			break;
 		case 0b010: // base rel indexed stack - BP + SI
-			MNEM_F(t, "bp + si");
+			MNEM_F(t, "%s + %s", GET_REG16(REG_BP), GET_REG16(REG_SI));
 			break;
 		case 0b011: // base rel indexed stack - BP + DI
-			MNEM_F(t, "bp + di");
+			MNEM_F(t, "%s + %s", GET_REG16(REG_BP), GET_REG16(REG_DI));
 			break;
 		case 0b100: // implied SI
-			MNEM_F(t, "si");
+			MNEM_F(t, "%s", GET_REG16(REG_SI));
 			break;
 		case 0b101: // implied DI
-			MNEM_F(t, "di");
+			MNEM_F(t, "%s", GET_REG16(REG_DI));
 			break;
 		case 0b110: // implied BP
-			MNEM_F(t, "bp");
+			MNEM_F(t, "%s", GET_REG16(REG_BP));
 			break;
 		case 0b111: // implied BX
-			MNEM_F(t, "bx");
+			MNEM_F(t, "%s", GET_REG16(REG_BX));
 			break;
 	}
 }
@@ -607,19 +615,19 @@ static void test_accum_imm(I8086_MNEM* cpu) {
 
 static void daa(I8086_MNEM* cpu) {
 	/* Decimal Adjust for Addition (27) b00100111 */
-	MNEM("daa");
+	MNEM0("daa");
 }
 static void das(I8086_MNEM* cpu) {
 	/* Decimal Adjust for Subtraction (2F) b00101111 */
-	MNEM("das");
+	MNEM0("das");
 }
 static void aaa(I8086_MNEM* cpu) {
 	/* ASCII Adjust for Addition (37) b00110111 */
-	MNEM("aaa");
+	MNEM0("aaa");
 }
 static void aas(I8086_MNEM* cpu) {
 	/* ASCII Adjust for Subtraction (3F) b00111111 */
-	MNEM("aas");
+	MNEM0("aas");
 }
 static void aam(I8086_MNEM* cpu) {
 	/* ASCII Adjust for Multiply (D4 0A) b11010100 00001010 */
@@ -633,7 +641,7 @@ static void aad(I8086_MNEM* cpu) {
 }
 static void salc(I8086_MNEM* cpu) {
 	/* set carry in AL (D6) b11010110 undocumented opcode */
-	MNEM("salc");
+	MNEM0("salc");
 }
 
 static void inc_reg(I8086_MNEM* cpu) {
@@ -673,16 +681,16 @@ static void pop_rm(I8086_MNEM* cpu) {
 }
 static void pushf(I8086_MNEM* cpu) {
 	/* push psw (9C) b10011100 */
-	MNEM("pushf");
+	MNEM0("pushf");
 }
 static void popf(I8086_MNEM* cpu) {
 	/* pop psw (9D) b10011101 */
-	MNEM("popf");
+	MNEM0("popf");
 }
 
 static void nop(I8086_MNEM* cpu) {
 	/* nop (90) b10010000 */
-	MNEM("nop");
+	MNEM0("nop");
 }
 static void xchg_accum_reg(I8086_MNEM* cpu) {
 	/* xchg AX, reg16 (91 - 97) b10010REG */	
@@ -707,58 +715,58 @@ static void xchg_rm_reg(I8086_MNEM* cpu) {
 
 static void cbw(I8086_MNEM* cpu) {
 	/* Convert byte to word (98) b10011000 */
-	MNEM("cbw");
+	MNEM0("cbw");
 }
 static void cwd(I8086_MNEM* cpu) {
 	/* Convert word to dword (99) b10011001 */
-	MNEM("cwd");
+	MNEM0("cwd");
 }
 
 static void wait(I8086_MNEM* cpu) {
 	/* wait (9B) b10011011 */
-	MNEM("wait");
+	MNEM0("wait");
 }
 
 static void sahf(I8086_MNEM* cpu) {
 	/* Store AH into flags (9E) b10011110 */
-	MNEM("sahf");
+	MNEM0("sahf");
 }
 static void lahf(I8086_MNEM* cpu) {
 	/* Load flags into AH (9F) b10011111 */
-	MNEM("lahf");
+	MNEM0("lahf");
 }
 
 static void hlt(I8086_MNEM* cpu) {
 	/* Halt CPU (F4) b11110100 */
-	MNEM("hlt");
+	MNEM0("hlt");
 }
 static void cmc(I8086_MNEM* cpu) {
 	// Complement carry flag (F5) b11110101
-	MNEM("cmc");
+	MNEM0("cmc");
 }
 static void clc(I8086_MNEM* cpu) {
 	// clear carry flag (F8) b11111000
-	MNEM("clc");
+	MNEM0("clc");
 }
 static void stc(I8086_MNEM* cpu) {
 	// set carry flag (F9) b11111001
-	MNEM("stc");
+	MNEM0("stc");
 }
 static void cli(I8086_MNEM* cpu) {
 	// clear interrupt flag (FA) b11111010
-	MNEM("cli");
+	MNEM0("cli");
 }
 static void sti(I8086_MNEM* cpu) {
 	// set interrupt flag (FB) b1111011
-	MNEM("sti");
+	MNEM0("sti");
 }
 static void cld(I8086_MNEM* cpu) {
 	// clear direction flag (FC) b11111100
-	MNEM("cld");
+	MNEM0("cld");
 }
 static void std(I8086_MNEM* cpu) {
 	// set direction flag (FD) b11111101
-	MNEM("std");
+	MNEM0("std");
 }
 
 static void inc_rm(I8086_MNEM* cpu) {
@@ -928,8 +936,11 @@ static void sar(I8086_MNEM* cpu) {
 static void jcc(I8086_MNEM* cpu) {
 	/* conditional jump(70-7F) b011XCCCC
 	   8086 cpu decode 60-6F the same as 70-7F */
-	int8_t imm = (int8_t)FETCH_BYTE();
-	uint16_t offset = LABEL_OFFSET(imm);
+	uint8_t imm = FETCH_BYTE();
+
+#ifdef CONVERT_REL_TO_ABS
+	uint16_t se = sign_extend8_16(imm);
+	uint16_t offset = TO_LABEL_OFFSET(se);
 	switch (CCCC) {
 		case I8086_JCC_JO:
 			MNEM("jo %04X", offset);
@@ -980,11 +991,67 @@ static void jcc(I8086_MNEM* cpu) {
 			MNEM("jg %04X", offset);
 			break;
 	}
+#else
+	switch (CCCC) {
+		case I8086_JCC_JO:
+			MNEM("jo %02X", imm);
+			break;
+		case I8086_JCC_JNO:
+			MNEM("jno %02X", imm);
+			break;
+		case I8086_JCC_JC:
+			MNEM("jc %02X", imm);
+			break;
+		case I8086_JCC_JNC:
+			MNEM("jnc %02X", imm);
+			break;
+		case I8086_JCC_JZ:
+			MNEM("jz %02X", imm);
+			break;
+		case I8086_JCC_JNZ:
+			MNEM("jnz %02X", imm);
+			break;
+		case I8086_JCC_JBE:
+			MNEM("jbe %02X", imm);
+			break;
+		case I8086_JCC_JA:
+			MNEM("ja %04X", imm);
+			break;
+		case I8086_JCC_JS:
+			MNEM("js %02X", imm);
+			break;
+		case I8086_JCC_JNS:
+			MNEM("jns %02X", imm);
+			break;
+		case I8086_JCC_JPE:
+			MNEM("jpe %02X", imm);
+			break;
+		case I8086_JCC_JPO:
+			MNEM("jpo %02X", imm);
+			break;
+		case I8086_JCC_JL:
+			MNEM("jl %02X", imm);
+			break;
+		case I8086_JCC_JGE:
+			MNEM("jge %02X", imm);
+			break;
+		case I8086_JCC_JLE:
+			MNEM("jle %02X", imm);
+			break;
+		case I8086_JCC_JG:
+			MNEM("jg %02X", imm);
+			break;
+	}
+#endif
 }
 static void jmp_intra_direct(I8086_MNEM* cpu) {
 	/* Jump near (E9) b11101001 */
-	int16_t imm = FETCH_WORD();
-	MNEM("jmp near %04X", LABEL_OFFSET(imm));
+	uint16_t imm = FETCH_WORD();
+#ifdef CONVERT_REL_TO_ABS
+	MNEM("jmp near %04X", TO_LABEL_OFFSET(imm));
+#else
+	MNEM("jmp near %02X", imm);
+#endif
 }
 static void jmp_inter_direct(I8086_MNEM* cpu) {
 	/* Jump addr:seg (EA) b11101010 */
@@ -994,8 +1061,13 @@ static void jmp_inter_direct(I8086_MNEM* cpu) {
 }
 static void jmp_intra_direct_short(I8086_MNEM* cpu) {
 	/* Jump near short (EB) b11101011 */
-	int8_t imm = FETCH_BYTE();
-	MNEM("jmp short %04X", LABEL_OFFSET(imm));
+	uint8_t imm = FETCH_BYTE();
+#ifdef CONVERT_REL_TO_ABS
+	uint16_t se = sign_extend8_16(imm);
+	MNEM("jmp short %04X", TO_LABEL_OFFSET(se)); 
+#else
+	MNEM("jmp short %02X", imm);
+#endif
 }
 static void jmp_intra_indirect(I8086_MNEM* cpu) {
 	/* Jump intra indirect (FF, R/M reg = 100) b11111111 */	
@@ -1010,8 +1082,12 @@ static void jmp_inter_indirect(I8086_MNEM* cpu) {
 
 static void call_intra_direct(I8086_MNEM* cpu) {
 	/* Call disp (E8) b11101000 */
-	int16_t imm = FETCH_WORD();
-	MNEM("call near %04X", LABEL_OFFSET(imm));
+	uint16_t imm = FETCH_WORD();
+#ifdef CONVERT_REL_TO_ABS
+	MNEM("call near %04X", TO_LABEL_OFFSET(imm));
+#else
+	MNEM("call near %02X", imm);
+#endif
 }
 static void call_inter_direct(I8086_MNEM* cpu) {
 	/* Call addr:seg (9A) b10011010 */
@@ -1039,7 +1115,7 @@ static void ret_intra_add_imm(I8086_MNEM* cpu) {
 static void ret_intra(I8086_MNEM* cpu) {
 	/* Ret (C3) b11000011 
 	undocumented* C1 decodes identically to C3 */
-	MNEM("ret");
+	MNEM0("ret");
 }
 static void ret_inter_add_imm(I8086_MNEM* cpu) {
 	/* Ret imm16 (CA) b11001010 
@@ -1050,7 +1126,7 @@ static void ret_inter_add_imm(I8086_MNEM* cpu) {
 static void ret_inter(I8086_MNEM* cpu) {
 	/* Ret (CB) b11001011 
 	undocumented* C9 decodes identically to CB */
-	MNEM("ret");
+	MNEM0("ret");
 }
 
 static void mov_rm_imm(I8086_MNEM* cpu) {
@@ -1203,46 +1279,46 @@ static void idiv_rm(I8086_MNEM* cpu) {
 static void movs(I8086_MNEM* cpu) {
 	/* movs (A4/A5) b1010010W */
 	if (W) {
-		MNEM("movsw");
+		MNEM0("movsw");
 	}
 	else {
-		MNEM("movsb");
+		MNEM0("movsb");
 	}
 }
 static void stos(I8086_MNEM* cpu) {
 	/* stos (AA/AB) b1010101W */
 	if (W) {
-		MNEM("stosw");
+		MNEM0("stosw");
 	}
 	else {
-		MNEM("stosb");
+		MNEM0("stosb");
 	}
 }
 static void lods(I8086_MNEM* cpu) {
 	/* lods (AC/AD) b1010110W */
 	if (W) {
-		MNEM("lodsw");
+		MNEM0("lodsw");
 	}
 	else {
-		MNEM("lodsb");
+		MNEM0("lodsb");
 	}
 }
 static void cmps(I8086_MNEM* cpu) {
 	/* cmps (A6/A7) b1010011W */
 	if (W) {
-		MNEM("cmpsw");
+		MNEM0("cmpsw");
 	}
 	else {
-		MNEM("cmpsb");
+		MNEM0("cmpsb");
 	}
 }
 static void scas(I8086_MNEM* cpu) {
 	/* scas (AE/AF) b1010111W */
 	if (W) {
-		MNEM("scasw");
+		MNEM0("scasw");
 	}
 	else {
-		MNEM("scasb");
+		MNEM0("scasb");
 	}
 }
 
@@ -1261,7 +1337,7 @@ static void lds(I8086_MNEM* cpu) {
 
 static void xlat(I8086_MNEM* cpu) {
 	/* Get data pointed by BX + AL (D7) b11010111 */
-	MNEM("xlat");
+	MNEM0("xlat");
 }
 
 static void esc(I8086_MNEM* cpu) {
@@ -1274,23 +1350,43 @@ static void esc(I8086_MNEM* cpu) {
 
 static void loopnz(I8086_MNEM* cpu) {
 	/* loop while not zero (E0) b1110000Z */
-	int8_t disp = FETCH_BYTE();
-	MNEM("loopnz %04X", LABEL_OFFSET(disp));
+	uint8_t disp = FETCH_BYTE();
+#ifdef CONVERT_REL_TO_ABS
+	uint16_t se = sign_extend8_16(disp);
+	MNEM("loopnz %04X", TO_LABEL_OFFSET(se));
+#else
+	MNEM("loopnz %02X", disp);
+#endif
 }
 static void loopz(I8086_MNEM* cpu) {
 	/* loop while zero (E1) b1110000Z */
-	int8_t disp = FETCH_BYTE();
-	MNEM("loopz %04X", LABEL_OFFSET(disp));
+	uint8_t disp = FETCH_BYTE();
+#ifdef CONVERT_REL_TO_ABS
+	uint16_t se = sign_extend8_16(disp);
+	MNEM("loopz %04X", TO_LABEL_OFFSET(se));
+#else
+	MNEM("loopz %02X", disp);
+#endif
 }
 static void loop(I8086_MNEM* cpu) {
 	/* loop if CX not zero (E2) b11100010 */
-	int8_t disp = FETCH_BYTE();
-	MNEM("loop %04X", LABEL_OFFSET(disp));
+	uint8_t disp = FETCH_BYTE();
+#ifdef CONVERT_REL_TO_ABS
+	uint16_t se = sign_extend8_16(disp);
+	MNEM("loop %04X", TO_LABEL_OFFSET(se));
+#else
+	MNEM("loop %02X", disp);
+#endif
 }
 static void jcxz(I8086_MNEM* cpu) {
 	/* jump if CX zero (E3) b11100011 */
-	int8_t disp = FETCH_BYTE();
-	MNEM("jcxz %04X", LABEL_OFFSET(disp));
+	uint8_t disp = FETCH_BYTE();
+#ifdef CONVERT_REL_TO_ABS
+	uint16_t se = sign_extend8_16(disp);
+	MNEM("jcxz %04X", TO_LABEL_OFFSET(se));
+#else
+	MNEM("jcxz %02X", disp);
+#endif
 }
 
 static void in_accum_imm(I8086_MNEM* cpu) {
@@ -1316,25 +1412,25 @@ static void out_accum_imm(I8086_MNEM* cpu) {
 static void in_accum_dx(I8086_MNEM* cpu) {
 	/* in AL/AX, DX */
 	if (W) {
-		MNEM("in ax, dx");
+		MNEM0("in ax, dx");
 	}
 	else {
-		MNEM("in al, dx");
+		MNEM0("in al, dx");
 	}
 }
 static void out_accum_dx(I8086_MNEM* cpu) {
 	/* out DX, AL/AX */
 	if (W) {
-		MNEM("out dx, ax");
+		MNEM0("out dx, ax");
 	}
 	else {
-		MNEM("out dx, al");
+		MNEM0("out dx, al");
 	}
 }
 
 static void int3(I8086_MNEM* cpu) {
 	/* interrupt CC b11001100 */
-	MNEM("int 3");
+	MNEM0("int 3");
 }
 
 static void int_(I8086_MNEM* cpu) {
@@ -1347,20 +1443,20 @@ static void int_(I8086_MNEM* cpu) {
 }
 static void into(I8086_MNEM* cpu) {
 	/* interrupt on overflow (CE) b11001110 */
-	MNEM("into");
+	MNEM0("into");
 }
 static void iret(I8086_MNEM* cpu) {
 	/* interrupt on return (CF) b11001111 */
-	MNEM("iret");
+	MNEM0("iret");
 }
 
 static int rep(I8086_MNEM* cpu) {
 	/* rep/repz/repnz (F2/F3) b1111001Z */
 	if (cpu->opcode & 0x1) {
-		MNEM("repz ");
+		MNEM0("repz ");
 	}
 	else {
-		MNEM("repnz ");
+		MNEM0("repnz ");
 	}
 	cpu->opcode = FETCH_BYTE();
 	return I8086_DECODE_REQ_CYCLE;
@@ -1373,20 +1469,27 @@ static int segment_override(I8086_MNEM* cpu) {
 }
 static int lock(I8086_MNEM* cpu) {
 	/* lock the bus (F0) b11110000 */
-	MNEM("lock ");
+	MNEM0("lock ");
 	cpu->opcode = FETCH_BYTE();
 	return I8086_DECODE_REQ_CYCLE;
 }
 
-static void i8086_fetch(I8086_MNEM* cpu, uint16_t cs, uint16_t ip) {
+static void i8086_next(I8086_MNEM* cpu, uint16_t seg, uint16_t offset) {
+	
+	cpu->segment = seg;
+	cpu->offset = offset;
+	cpu->counter = 0;
+
 	cpu->modrm.byte = 0;
 	cpu->segment_prefix = 0xFF;
 	cpu->rep_prefix = 0;
-	IP = ip;
-	cpu->offset = ip;
-	cpu->segment = cs;
+	
 	cpu->str[0] = '\0'; 
 	cpu->addressing_str[0] = '\0';
+}
+
+static void i8086_fetch(I8086_MNEM* cpu, uint16_t seg, uint16_t offset) {
+	i8086_next(cpu, seg, offset);
 	cpu->opcode = FETCH_BYTE();
 }
 
@@ -1507,7 +1610,7 @@ static int i8086_decode_opcode_fe(I8086_MNEM* cpu) {
 				push_rm(cpu);
 				break;
 			case 0b111:
-				//return I8086_DECODE_UNDEFINED;
+				return I8086_DECODE_UNDEFINED;
 		}
 	}
 	else {
@@ -2033,7 +2136,7 @@ int i8086_mnem(I8086_MNEM* mnem) {
 	return i8086_decode_instruction(mnem);
 }
 
-int i8086_mnem_at(I8086_MNEM* mnem, uint16_t cs, uint16_t ip) {
-	i8086_fetch(mnem, cs, ip);
+int i8086_mnem_at(I8086_MNEM* mnem, uint16_t seg, uint16_t offset) {
+	i8086_fetch(mnem, seg, offset);
 	return i8086_decode_instruction(mnem);
 }

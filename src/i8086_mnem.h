@@ -1,6 +1,6 @@
 /* i8086_mnem.h
  * Thomas J. Armytage 2025 ( https://github.com/tommojphillips/ )
- * Intel 8086 Mnemonics
+ * Intel 8086 Mnemonics/Disassembler
  */
 
 #ifndef I8086_MNEM_H
@@ -29,8 +29,11 @@ typedef struct I8086_MNEM {
 extern "C" {
 #endif
 
+/* Disassemble Opcode at CS:IP */
 int i8086_mnem(I8086_MNEM* cpu);
-int i8086_mnem_at(I8086_MNEM* mnem, uint16_t cs, uint16_t ip);
+
+/* Disassemble Opcode at seg:offset */
+int i8086_mnem_at(I8086_MNEM* mnem, uint16_t seg, uint16_t offset);
 
 #ifdef __cplusplus
 };
