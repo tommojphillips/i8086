@@ -31,6 +31,13 @@ void alu_sar8(I8086* cpu, uint8_t* x1, uint8_t count);
 void alu_inc8(I8086* cpu, uint8_t* x1);
 void alu_dec8(I8086* cpu, uint8_t* x1);
 
+void alu_mul8(I8086* cpu, uint8_t multiplicand, uint8_t multiplier, uint8_t* lo, uint8_t* hi);
+void alu_imul8(I8086* cpu, uint8_t multiplicand, uint8_t multiplier, uint8_t* lo, uint8_t* hi);
+void alu_div8(I8086* cpu, uint8_t dividend_lo, uint8_t dividend_hi, uint8_t divider, uint8_t* quotient, uint8_t* remainder);
+void alu_idiv8(I8086* cpu, uint8_t dividend_lo, uint8_t dividend_hi, uint8_t divider, uint8_t* quotient, uint8_t* remainder);
+
+void alu_neg8(I8086* cpu, uint8_t* x1);
+
 void alu_daa(I8086* cpu, uint8_t* x1);
 void alu_das(I8086* cpu, uint8_t* x1);
 void alu_aaa(I8086* cpu, uint8_t* l, uint8_t* h);
@@ -58,6 +65,13 @@ void alu_sar16(I8086* cpu, uint16_t* x1, uint8_t count);
 
 void alu_inc16(I8086* cpu, uint16_t* x1);
 void alu_dec16(I8086* cpu, uint16_t* x1);
+
+void alu_mul16(I8086* cpu, uint16_t multiplicand, uint16_t multiplier, uint16_t* lo, uint16_t* hi);
+void alu_imul16(I8086* cpu, uint16_t multiplicand, uint16_t multiplier, uint16_t* lo, uint16_t* hi);
+void alu_div16(I8086* cpu, uint16_t dividend_lo, uint16_t dividend_hi, uint16_t divider, uint16_t* quotient, uint16_t* remainder);
+void alu_idiv16(I8086* cpu, uint16_t dividend_lo, uint16_t dividend_hi, uint16_t divider, uint16_t* quotient, uint16_t* remainder);
+
+void alu_neg16(I8086* cpu, uint16_t* x1);
 
 #ifdef __cplusplus
 };
