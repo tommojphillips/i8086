@@ -117,18 +117,14 @@ typedef struct I8086_MOD_RM {
 #pragma warning( pop ) 
 
 /* I8086 Function pointers */
-typedef struct I8086_FUNCS {	
-	void* (*get_mem_ptr)(uint20_t); // Get mem pointer
-
+typedef struct I8086_FUNCS {
 	uint8_t(*read_mem_byte)(uint20_t);  // read mem byte
-	uint16_t(*read_mem_word)(uint20_t); // read mem word
 	uint8_t(*read_io_byte)(uint16_t);   // read io byte
-	uint16_t(*read_io_word)(uint16_t);  // read io byte
+	uint16_t(*read_io_word)(uint16_t);  // read io word
 
 	void(*write_mem_byte)(uint20_t, uint8_t);  // write mem byte
-	void(*write_mem_word)(uint20_t, uint16_t); // write mem word
 	void(*write_io_byte)(uint16_t, uint8_t);   // write io byte
-	void(*write_io_word)(uint16_t, uint16_t);  // write io byte	
+	void(*write_io_word)(uint16_t, uint16_t);  // write io word	
 
 } I8086_FUNCS;
 
@@ -178,8 +174,6 @@ typedef struct I8086 {
 	//uint8_t opr;                               // Internal register OPR. Used in Memory accesses. Holds the value that is read or written.
 	//uint16_t ind;                              // Internal register IND. Used in Memory accesses. Holds the address in the segment.
 	
-	uint20_t ea; // last mod rm EA
-
 	uint64_t cycles;
 
 	I8086_PINS pins;                             // cpu pins

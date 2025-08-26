@@ -10,6 +10,15 @@
 extern "C" {
 #endif
 
+void alu_daa(I8086* cpu, uint8_t* x1);
+void alu_das(I8086* cpu, uint8_t* x1);
+void alu_aaa(I8086* cpu, uint8_t* l, uint8_t* h);
+void alu_aas(I8086* cpu, uint8_t* l, uint8_t* h);
+void alu_aad(I8086* cpu, uint8_t* l, uint8_t* h, uint8_t divisor);
+void alu_aam(I8086* cpu, uint8_t* l, uint8_t* h, uint8_t divisor);
+
+/* 8bit ALU */
+
 void alu_and8(I8086* cpu, uint8_t* x1, uint8_t x2);
 void alu_xor8(I8086* cpu, uint8_t* x1, uint8_t x2);
 void alu_or8(I8086*  cpu, uint8_t* x1, uint8_t x2);
@@ -38,12 +47,9 @@ void alu_idiv8(I8086* cpu, uint8_t dividend_lo, uint8_t dividend_hi, uint8_t div
 
 void alu_neg8(I8086* cpu, uint8_t* x1);
 
-void alu_daa(I8086* cpu, uint8_t* x1);
-void alu_das(I8086* cpu, uint8_t* x1);
-void alu_aaa(I8086* cpu, uint8_t* l, uint8_t* h);
-void alu_aas(I8086* cpu, uint8_t* l, uint8_t* h);
-void alu_aad(I8086* cpu, uint8_t* l, uint8_t* h, uint8_t divisor);
-void alu_aam(I8086* cpu, uint8_t* l, uint8_t* h, uint8_t divisor);
+void alu_setmo8(I8086* cpu, uint8_t* x1, uint8_t count);
+
+/* 16bit ALU */
 
 void alu_and16(I8086* cpu, uint16_t* x1, uint16_t x2);
 void alu_xor16(I8086* cpu, uint16_t* x1, uint16_t x2);
@@ -72,6 +78,8 @@ void alu_div16(I8086* cpu, uint16_t dividend_lo, uint16_t dividend_hi, uint16_t 
 void alu_idiv16(I8086* cpu, uint16_t dividend_lo, uint16_t dividend_hi, uint16_t divider, uint16_t* quotient, uint16_t* remainder);
 
 void alu_neg16(I8086* cpu, uint16_t* x1);
+
+void alu_setmo16(I8086* cpu, uint16_t* x1, uint8_t count);
 
 #ifdef __cplusplus
 };

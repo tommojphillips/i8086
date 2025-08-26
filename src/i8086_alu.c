@@ -52,22 +52,27 @@
 extern void i8086_int(I8086* cpu, uint8_t type);
 
 void alu_daa(I8086* cpu, uint8_t* x1) {
-	uint8_t old = *x1;
 	uint8_t correction = 0;
 	uint8_t af = AF;
 	uint8_t cf = CF;
 
-	// Lower nibble adjustment
-	if ((old & 0x0F) > 9 || af) {
+	uint16_t check_val = 0;
+	if (af) {
+		check_val = 0x9F;
+	}
+	else {
+		check_val = 0x99;
+	}
+
+	if ((*x1 & 0x0F) > 9 || af) {
 		correction |= 0x06;
-		af = 1;  // AF is set if low nibble adjustment occurs
+		af = 1;
 	}
 	else {
 		af = 0;
 	}
 
-	// Upper nibble adjustment
-	if (old > 0x99 || cf) {
+	if (*x1 > check_val || cf) {
 		correction |= 0x60;
 		cf = 1;
 	}
@@ -75,31 +80,46 @@ void alu_daa(I8086* cpu, uint8_t* x1) {
 		cf = 0;
 	}
 
-	// Apply correction
 	alu_add8(cpu, x1, correction);
 
-	// Update flags
 	AF = af;
 	CF = cf;
 }
 void alu_das(I8086* cpu, uint8_t* x1) {
 	uint8_t correction = 0;
-	if ((*x1 & 0x0F) > 9 || AF) {
-		correction |= 6;
-		AF = 1;
+	uint8_t af = AF;
+	uint8_t cf = CF;
+
+	uint16_t check_val = 0;
+	if (af) {
+		check_val = 0x9F;
+	}
+	else {
+		check_val = 0x99;
 	}
 
-	if (*x1 > 0x9F || CF) {
+	if ((*x1 & 0x0F) > 9 || af) {
+		correction |= 6;
+		af = 1;
+	}
+
+	if (*x1 > check_val || cf) {
 		correction |= 0x60;
-		CF = 1;
+		cf = 1;
 	}
 
 	alu_sub8(cpu, x1, correction);
+
+	AF = af;
+	CF = cf;
 }
 void alu_aaa(I8086* cpu, uint8_t* l, uint8_t* h) {
-	*l &= 0x0F;
-	if (*l > 9 || AF) {
-		*l += 6;
+
+	SF = *l >= 0x7A && *l <= 0xF9;
+	OF = *l >= 0x7A && *l <= 0x7F;
+
+	if ((*l & 0x0F) > 9 || AF) {
+		*l = (*l + 6);
 		*h += 1;
 		AF = 1;
 		CF = 1;
@@ -109,13 +129,17 @@ void alu_aaa(I8086* cpu, uint8_t* l, uint8_t* h) {
 		CF = 0;
 	}
 
-	uint16_t t = ((uint16_t)*h << 8) | *l;
-	SET_ZF16(t);
-	SET_SF8(*h);
+	SET_ZF8(*l);
+	SET_PF8(*l);
+
+	*l &= 0x0F;
 }
 void alu_aas(I8086* cpu, uint8_t* l, uint8_t* h) {
-	*l &= 0x0F;
-	if (*l > 9 || AF) {
+
+	SF = (!AF && *l >= 0x80) || (AF && (*l <= 0x05 || *l >= 0x86));
+	OF = (AF && *l >= 0x80 && *l <= 0x85);
+
+	if ((*l & 0x0F) > 9 || AF) {
 		*l -= 6;
 		*h -= 1;
 		AF = 1;
@@ -125,19 +149,31 @@ void alu_aas(I8086* cpu, uint8_t* l, uint8_t* h) {
 		AF = 0;
 		CF = 0;
 	}
+
+	SET_ZF8(*l);
+	SET_PF8(*l);
+
+	*l &= 0x0F;
 }
 void alu_aam(I8086* cpu, uint8_t* l, uint8_t* h, uint8_t divisor) {
+	
 	if (divisor != 0) {
 		*h = (*l / divisor);
 		*l = (*l % divisor);
+		SET_PF8(*l);
+		SET_SF8(*l);
+		SET_ZF8(*l);
 	}
 	else {
-		*h = 0;
-		*l = 0;
+		SET_PF8(0);
+		SET_SF8(0);
+		SET_ZF8(0);
+		AF = 0;
+		CF = 0;
+		OF = 0;
+		i8086_int(cpu, INT_DBZ);
 	}
-	SET_PF8(*l);
-	SET_SF8(*l);
-	SET_ZF8(*l);
+	
 }
 void alu_aad(I8086* cpu, uint8_t* l, uint8_t* h, uint8_t divisor) {	
 	*l = (*h * divisor) + *l;
@@ -270,11 +306,13 @@ void alu_shl8(I8086* cpu, uint8_t* x1, uint8_t count) {
 		*x1 <<= 1;
 	}
 	if (count == 1) {
-		OF = ((*x1 >> 7) ^ (*x1 >> 6)) & 1;
+		OF = ((*x1 >> 7) ^ CF) & 1;		
 	}
-	//SET_SF8(*x1);
-	//SET_PF8(*x1);
-	//SET_ZF8(*x1);	
+	if (count != 0) {
+		SET_PF8(*x1);
+		SET_SF8(*x1);
+		SET_ZF8(*x1);
+	}
 }
 void alu_shr8(I8086* cpu, uint8_t* x1, uint8_t count) {
 	if (count == 1) {
@@ -284,9 +322,11 @@ void alu_shr8(I8086* cpu, uint8_t* x1, uint8_t count) {
 		CF = (*x1 & 1);		
 		*x1 >>= 1;
 	}
-	//SET_SF8(*x1);
-	//SET_PF8(*x1);
-	//SET_ZF8(*x1);
+	if (count != 0) {
+		SET_SF8(*x1);
+		SET_PF8(*x1);
+		SET_ZF8(*x1);
+	}
 }
 void alu_sar8(I8086* cpu, uint8_t* x1, uint8_t count) {
 	for (int i = 0; i < count; ++i) {
@@ -298,9 +338,22 @@ void alu_sar8(I8086* cpu, uint8_t* x1, uint8_t count) {
 	if (count == 1) {
 		OF = 0;
 	}
-	//SET_SF8(*x1);
-	//SET_PF8(*x1);
-	//SET_ZF8(*x1);
+	if (count != 0) {
+		SET_SF8(*x1);
+		SET_PF8(*x1);
+		SET_ZF8(*x1);
+	}
+}
+void alu_setmo8(I8086* cpu, uint8_t* x1, uint8_t count) {
+	if (count != 0) {
+		*x1 = 0xFF;
+		CF = 0;
+		AF = 0;
+		OF = 0;
+		SET_PF8(*x1);
+		SET_SF8(*x1);
+		SET_ZF8(*x1);
+	}
 }
 
 void alu_inc8(I8086* cpu, uint8_t* x1) {
@@ -323,40 +376,28 @@ void alu_dec8(I8086* cpu, uint8_t* x1) {
 }
 
 void alu_mul8(I8086* cpu, uint8_t multiplicand, uint8_t multiplier, uint8_t* lo, uint8_t* hi) {
-	uint16_t tmp = (multiplicand * multiplier);
+	uint16_t tmp = multiplicand * multiplier;
 	*lo = (tmp & 0xFF);
 	*hi = ((tmp >> 8) & 0xFF);
+
 	CF = (*hi != 0);
 	OF = (*hi != 0);
 	
-	//SET_SF8(*lo);
-	//SET_PF8(*lo);
-	//SET_ZF8(*lo);
+	SET_SF8(*hi);
+	SET_PF8(*hi);
+	SET_ZF8(*hi != 0);
 }
 void alu_imul8(I8086* cpu, uint8_t multiplicand, uint8_t multiplier, uint8_t* lo, uint8_t* hi) {
-	/*int16_t tmp = ((int8_t)multiplicand * (int8_t)multiplier);
-	*lo = (tmp & 0xFF);
-	*hi = ((tmp >> 8) & 0xFF);
-	CF = (*hi != 0);
-	OF = (*hi != 0);
-
-	SET_SF16(tmp);
-	SET_PF16(tmp);
-	SET_ZF16(tmp);*/
-
 	int16_t tmp = (int8_t)multiplicand * (int8_t)multiplier;
 	*lo = (uint8_t)(tmp & 0xFF);
 	*hi = (uint8_t)((tmp >> 8) & 0xFF);
-	
-	int8_t hi_signed = (int8_t)*hi;
-	CF = OF = !(hi_signed == 0x00 || hi_signed == -1);
 
-	//CF = (*hi != 0);
-	//OF = (*hi != 0);
-	
-	//SET_SF8(*lo);
-	//SET_PF8(*lo);
-	//SET_ZF8(*lo);
+	OF = (int8_t)*hi != ((int8_t)*lo < 0 ? -1 : 0);
+	CF = (int8_t)*hi != ((int8_t)*lo < 0 ? -1 : 0);
+
+	SET_SF8(*hi);
+	SET_PF8(*hi);
+	SET_ZF8(*hi != 0);
 }
 
 void alu_div8(I8086* cpu, uint8_t dividend_lo, uint8_t dividend_hi, uint8_t divider, uint8_t* quotient, uint8_t* remainder) {
@@ -368,11 +409,21 @@ void alu_div8(I8086* cpu, uint8_t dividend_lo, uint8_t dividend_hi, uint8_t divi
 		uint16_t quotient16 = (dividend / divider);
 		uint16_t remainder16 = (dividend % divider);
 		if (quotient16 > 0xFF) {
+			uint8_t tmp = dividend_hi;
+			alu_sub8(cpu, &tmp, (uint8_t)divider);
 			i8086_int(cpu, INT_DBZ); /* quotient too large */
+			OF = 0;
+			SET_PF8(remainder16 & 0xFF);
+			SET_SF8(quotient16 & 0xFF);
 		}
 		else {
 			*quotient = quotient16 & 0xFF;   // quotient
 			*remainder = remainder16 & 0xFF; // remainder
+
+			AF = 0;
+			SET_SF8(0x80);
+			SET_PF8(remainder16 & 0xFF);
+			SET_ZF8(!(*quotient));
 		}
 	}
 }
@@ -529,11 +580,13 @@ void alu_shl16(I8086* cpu, uint16_t* x1, uint8_t count) {
 		*x1 <<= 1;	
 	}
 	if (count == 1) {
-		OF = ((*x1 >> 15) ^ (*x1 >> 14)) & 1;
+		OF = ((*x1 >> 15) ^ CF) & 1;
 	}
-	//SET_SF16(*x1);
-	//SET_PF16(*x1);
-	//SET_ZF16(*x1);
+	if (count != 0) {
+		SET_SF16(*x1);
+		SET_PF16(*x1);
+		SET_ZF16(*x1);
+	}
 }
 void alu_shr16(I8086* cpu, uint16_t* x1, uint8_t count) {
 	if (count == 1) {
@@ -543,9 +596,11 @@ void alu_shr16(I8086* cpu, uint16_t* x1, uint8_t count) {
 		CF = (*x1 & 1);
 		*x1 >>= 1;
 	}
-	//SET_SF16(*x1);
-	//SET_PF16(*x1);
-	//SET_ZF16(*x1);	
+	if (count != 0) {
+		SET_SF16(*x1);
+		SET_PF16(*x1);
+		SET_ZF16(*x1);
+	}
 }
 void alu_sar16(I8086* cpu, uint16_t* x1, uint8_t count) {	
 	for (int i = 0; i < count; ++i) {
@@ -557,9 +612,22 @@ void alu_sar16(I8086* cpu, uint16_t* x1, uint8_t count) {
 	if (count == 1) {
 		OF = 0;
 	}
-	//SET_SF16(*x1);
-	//SET_PF16(*x1);
-	//SET_ZF16(*x1);
+	if (count != 0) {
+		SET_SF16(*x1);
+		SET_PF16(*x1);
+		SET_ZF16(*x1);
+	}
+}
+void alu_setmo16(I8086* cpu, uint16_t* x1, uint8_t count) {
+	if (count != 0) {
+		*x1 = 0xFFFF;
+		CF = 0;
+		AF = 0;
+		OF = 0;
+		SET_SF16(*x1);
+		SET_PF16(*x1);
+		SET_ZF16(*x1);
+	}
 }
 
 void alu_inc16(I8086* cpu, uint16_t* x1) {
@@ -582,50 +650,28 @@ void alu_dec16(I8086* cpu, uint16_t* x1) {
 }
 
 void alu_mul16(I8086* cpu, uint16_t multiplicand, uint16_t multiplier, uint16_t* lo, uint16_t* hi) {
-	uint32_t tmp = (multiplicand * multiplier);
+	uint32_t tmp = multiplicand * multiplier;
 	*lo = (tmp & 0xFFFF);
 	*hi = ((tmp >> 16) & 0xFFFF);
+
 	CF = (*hi != 0);
 	OF = (*hi != 0);
 
-	//SET_SF16(*lo);
-	//SET_PF16(*lo);
-	//SET_ZF16(*lo);
+	SET_SF16(*hi);
+	SET_PF16(*hi);
+	SET_ZF16(*hi != 0);
 }
-void alu_imul16(I8086* cpu, uint16_t multiplicand, uint16_t multiplier, uint16_t* lo, uint16_t* hi) {
-	/*int32_t tmp = ((int16_t)multiplicand * (int16_t)multiplier);
-	*lo = (tmp & 0xFFFF);
-	*hi = ((tmp >> 16) & 0xFFFF);
-	CF = (*hi != 0);
-	OF = (*hi != 0);
+void alu_imul16(I8086* cpu, uint16_t multiplicand, uint16_t multiplier, uint16_t* lo, uint16_t* hi) {	
+	int32_t tmp = (int16_t)multiplicand * (int16_t)multiplier;
+	*lo = (uint16_t)(tmp & 0xFFFF);
+	*hi = (uint16_t)((tmp >> 16) & 0xFFFF);
+	
+	OF = (int16_t)*hi != ((int16_t)*lo < 0 ? -1 : 0);
+	CF = (int16_t)*hi != ((int16_t)*lo < 0 ? -1 : 0);
 
-	SET_SF16(tmp);
-	SET_PF16(tmp);
-	SET_ZF16(tmp);*/
-
-	int16_t a = (int16_t)multiplicand;
-	int16_t b = (int16_t)multiplier;
-
-	int32_t result = (int32_t)a * (int32_t)b;
-
-	*lo = (uint16_t)(result & 0xFFFF);
-	*hi = (uint16_t)((result >> 16) & 0xFFFF);
-
-	/*if (result < -32768 || result > 32767) {
-		CF = 1;
-		OF = 1;
-	}
-	else {
-		CF = 0;
-		OF = 0;
-	}*/
-
-	int16_t hi_signed = (int16_t)*hi;
-	CF = OF = !(hi_signed == 0x00 || hi_signed == -1);
-
-	//SET_SF16(*lo);
-	//SET_PF16(*lo);
-	//SET_ZF16(*lo);
+	SET_SF16(*hi);
+	SET_PF16(*hi);
+	SET_ZF16(*hi != 0);
 }
 void alu_div16(I8086* cpu, uint16_t dividend_lo, uint16_t dividend_hi, uint16_t divider, uint16_t* quotient, uint16_t* remainder) {
 	if (divider == 0) {
