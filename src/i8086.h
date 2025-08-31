@@ -171,8 +171,7 @@ typedef struct I8086 {
 	uint8_t int_delay;                           // interrupt delay	
 	uint8_t intr_type;                           // Hardware interrupt type. 0-255 (INTR)
 	
-	//uint8_t opr;                               // Internal register OPR. Used in Memory accesses. Holds the value that is read or written.
-	//uint16_t ind;                              // Internal register IND. Used in Memory accesses. Holds the address in the segment.
+	uint8_t instruction_len;
 	
 	uint64_t cycles;
 

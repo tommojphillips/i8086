@@ -138,6 +138,7 @@ static void write_byte(I8086* cpu, uint16_t segment, uint16_t offset, uint8_t va
 static uint8_t fetch_byte(I8086* cpu) {
 	uint8_t v = read_byte(cpu, CS, IP);
 	IP += 1;
+	cpu->instruction_len += 1;
 	return v;
 }
 
@@ -151,6 +152,7 @@ static void write_word(I8086* cpu, uint16_t segment, uint16_t offset, uint16_t v
 static uint16_t fetch_word(I8086* cpu) {
 	uint16_t v = read_word(cpu, CS, IP);
 	IP += 2;
+	cpu->instruction_len += 2;
 	return v;
 }
 
@@ -1199,7 +1201,7 @@ static void cwd(I8086* cpu) {
 static void wait(I8086* cpu) {
 	/* wait (9B) b10011011 */
 	if (!cpu->pins.test) {
-		//IP -= 1;
+		//IP -= cpu->instruction_len;
 	}
 	CYCLES(4);
 }
@@ -1218,7 +1220,7 @@ static void lahf(I8086* cpu) {
 
 static void hlt(I8086* cpu) {
 	/* Halt CPU (F4) b11110100 */
-	IP -= 1;
+	IP -= cpu->instruction_len;
 	CYCLES(2);
 }
 static void cmc(I8086* cpu) {
@@ -2027,8 +2029,7 @@ static int movs(I8086* cpu) {
 
 	/* Rep prefix check */
 	if (F1) {
-		return I8086_DECODE_REQ_CYCLE;
-		//IP -= 2; /* Allow interrupts */
+		IP -= cpu->instruction_len; /* Allow interrupts */
 	}
 	return I8086_DECODE_OK;
 }
@@ -2063,8 +2064,7 @@ static int stos(I8086* cpu) {
 
 	/* Rep prefix check */
 	if (F1) {
-		return I8086_DECODE_REQ_CYCLE;
-		//IP -= 2; /* Allow interrupts */
+		IP -= cpu->instruction_len; /* Allow interrupts */
 	}
 	return I8086_DECODE_OK;
 }
@@ -2100,8 +2100,7 @@ static int lods(I8086* cpu) {
 
 	/* Rep prefix check */
 	if (F1) {
-		return I8086_DECODE_REQ_CYCLE;
-		//IP -= 2; /* Allow interrupts */
+		IP -= cpu->instruction_len; /* Allow interrupts */
 	}
 	return I8086_DECODE_OK;
 }
@@ -2142,8 +2141,7 @@ static int cmps(I8086* cpu) {
 
 	/* Rep prefix check */
 	if (F1 && ZF == F1Z) {
-		return I8086_DECODE_REQ_CYCLE;
-		//IP -= 2; /* Allow interrupts */
+		IP -= cpu->instruction_len; /* Allow interrupts */
 	}
 	return I8086_DECODE_OK;
 }
@@ -2180,8 +2178,7 @@ static int scas(I8086* cpu) {
 
 	/* Rep prefix check */
 	if (F1 && ZF == F1Z) {
-		return I8086_DECODE_REQ_CYCLE;
-		//IP -= 2; /* Allow interrupts */
+		IP -= cpu->instruction_len; /* Allow interrupts */
 	}
 	return I8086_DECODE_OK;
 }
@@ -2382,6 +2379,7 @@ static void i8086_fetch(I8086* cpu) {
 	cpu->internal_flags = 0;
 	cpu->modrm.byte = 0;
 	cpu->segment_prefix = 0xFF;
+	cpu->instruction_len = 0;
 	cpu->opcode = fetch_byte(cpu);
 }
 
@@ -3051,6 +3049,7 @@ void i8086_reset(I8086* cpu) {
 	cpu->cycles = 0;
 	cpu->internal_flags = 0;
 	cpu->segment_prefix = 0xFF;
+	cpu->instruction_len = 0;
 
 	cpu->pins.intr = 0;
 	cpu->pins.mode = 0;
