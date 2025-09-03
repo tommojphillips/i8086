@@ -156,14 +156,6 @@ static uint16_t fetch_word(I8086* cpu) {
 	return v;
 }
 
-static void push_byte(I8086* cpu, uint8_t value) {
-	SP -= 1;
-	write_byte(cpu, SS, SP, value);
-}
-static void pop_byte(I8086* cpu, uint8_t* value) {
-	*value = read_byte(cpu, SS, SP);
-	SP += 1;
-}
 static void push_word(I8086* cpu, uint16_t value) {
 	SP -= 2;
 	write_word(cpu, SS, SP, value);
@@ -256,15 +248,6 @@ static uint8_t* get_reg8(I8086* cpu, int reg) {
 	}
 	else {
 		return &cpu->registers[reg & 0x3].l;
-	}
-}
-
-/* Swap pointers if 'D' bit is set in opcode bXXXXXXDX */
-static void get_direction(I8086* cpu, void** ptr1, void** ptr2) {
-	if (D) {
-		void* tmp = *ptr1;
-		*ptr1 = *ptr2;
-		*ptr2 = tmp;
 	}
 }
 
@@ -489,28 +472,6 @@ static inline void exec_bin_op16_ro(I8086* cpu, void (*op)(I8086*, uint16_t, uin
 	else {
 		op(cpu, tmp, *reg);
 	}
-}
-// Resolve bit16 ModR/M + reg, then execute a binary op. with writeback
-// The op must be of the form: void op(I8086*, uint16_t*, uint16_t);
-static inline void exec_bin_op16_imm(I8086* cpu, void (*op)(I8086*, uint16_t*, uint16_t), uint16_t imm) {
-	op16_t rm = modrm_get_op16(cpu);
-	uint16_t tmp = op16_read(cpu, rm);
-	op(cpu, &tmp, imm);
-	op16_write(cpu, rm, tmp);
-}
-// Resolve bit16 ModR/M + reg, then execute a binary op. no writeback
-// The op must be of the form: void op(I8086*, uint16_t, uint16_t);
-static inline void exec_bin_op16_imm_ro(I8086* cpu, void (*op)(I8086*, uint16_t, uint16_t), uint16_t imm) {
-	op16_t rm = modrm_get_op16(cpu);
-	uint16_t tmp = op16_read(cpu, rm);
-	op(cpu, tmp, imm);
-}
-
-/* Use the mod r/m byte to calculate a 20bit address eg (segment:offset) */
-static uint20_t modrm_get_effective_address(I8086* cpu) {
-	uint16_t offset = modrm_get_offset(cpu);;
-	uint16_t seg = modrm_get_segment(cpu);
-	return PHYS_ADDRESS(seg, offset);
 }
 
 static void fetch_modrm(I8086* cpu) {
@@ -1736,10 +1697,10 @@ static void jmp_inter_indirect(I8086* cpu) {
 static void call_intra_direct(I8086* cpu) {
 	/* Call disp (E8) b11101000 */
 
-	/* NOTE: We need to read ip prior to pushing ip
-		This is so if SP = R/M,
-		it doesn't write over it when pushing the ip
-		This is based on the JSON 8088 tests. SingleStepTests */
+	/* NOTE: We need to read ip prior to pushing it.
+		This is so if SP = [R/M],
+		it doesn't write over it when pushing ip.
+		This is based on the JSON 8088 tests. */
 
 	uint16_t imm = fetch_word(cpu);
 	push_word(cpu, IP);
@@ -1750,10 +1711,10 @@ static void call_intra_direct(I8086* cpu) {
 static void call_inter_direct(I8086* cpu) {
 	/* Call addr:seg (9A) b10011010 */
 
-	/* NOTE: We need to read ip,cs prior to pushing ip,cs
-		This is so if SP = R/M,
-		it doesn't write over it when pushing the ip,cs
-		This is based on the JSON 8088 tests. SingleStepTests */
+	/* NOTE: We need to read ip,cs prior to pushing them.
+		This is so if SP = [R/M],
+		it doesn't write over it when pushing ip,cs.
+		This is based on the JSON 8088 tests. */
 
 	uint16_t ip = fetch_word(cpu);
 	uint16_t cs = fetch_word(cpu);
@@ -2586,7 +2547,7 @@ static void i8086_decode_opcode_80(I8086* cpu) {
 			break;
 	}
 }
-static int i8086_decode_opcode_d0(I8086* cpu) {
+static void i8086_decode_opcode_d0(I8086* cpu) {
 	/* 0xD0 - 0xD3 b110100VW (Shift) */
 	fetch_modrm(cpu);
 	switch (cpu->modrm.reg) {
@@ -2608,26 +2569,24 @@ static int i8086_decode_opcode_d0(I8086* cpu) {
 		case 0b101:
 			shr(cpu);
 			break;
-		case 0b110:
+		case 0b110: /* 8086 undocumented; Set Minus One (-1) */
 			setmo(cpu);
 			break;
 		case 0b111:
 			sar(cpu);
 			break;
 	}
-	return I8086_DECODE_OK;
 }
-static int i8086_decode_opcode_f6(I8086* cpu) {
+static void i8086_decode_opcode_f6(I8086* cpu) {
 	/* F6/F7 b1111011W (Group 1) */
 	fetch_modrm(cpu);
 	switch (cpu->modrm.reg) {
 		case 0b000:
 			test_rm_imm(cpu);
 			break;
-		case 0b001:
+		case 0b001: /* 8086 undocumented; Decodes identically to b000 */
 			test_rm_imm(cpu);
 			break;
-			//return I8086_DECODE_UNDEFINED;
 		case 0b010:
 			not(cpu);
 			break;
@@ -2647,9 +2606,8 @@ static int i8086_decode_opcode_f6(I8086* cpu) {
 			idiv_rm(cpu);
 			break;
 	}
-	return I8086_DECODE_OK;
 }
-static int i8086_decode_opcode_fe(I8086* cpu) {
+static void i8086_decode_opcode_fe(I8086* cpu) {
 	/* FE/FF b1111111W (Group 2) */
 	fetch_modrm(cpu);
 	switch (cpu->modrm.reg) {
@@ -2678,7 +2636,6 @@ static int i8086_decode_opcode_fe(I8086* cpu) {
 			push_rm(cpu);
 			break;
 	}
-	return I8086_DECODE_OK;
 }
 
 static int i8086_decode_opcode(I8086* cpu) {
@@ -2712,7 +2669,7 @@ static int i8086_decode_opcode(I8086* cpu) {
 		case 0x0E:
 			push_seg(cpu);
 			break;
-		case 0x0F: // pop cs; 8086 undocumented
+		case 0x0F: /* pop cs; 8086 undocumented */
 			pop_seg(cpu);
 			break;
 		
@@ -2855,7 +2812,7 @@ static int i8086_decode_opcode(I8086* cpu) {
 			pop_reg(cpu);
 			break;
 
-		// 8086 undocumented; 0x60-0x6F decodes identically to 0x70-0x7F on 8086 (b111X CCCC)
+		/* 8086 undocumented; 0x60-0x6F decodes identically to 0x70-0x7F on 8086 (b111X CCCC) */
 		case 0x60:
 		case 0x61:
 		case 0x62:
@@ -3009,11 +2966,11 @@ static int i8086_decode_opcode(I8086* cpu) {
 			mov_reg_imm(cpu);
 			break;
 
-		case 0xC0: // 8086 undocumented; on 8086 0xC0 decodes identically to 0xC2 (b1100 00X0)
+		case 0xC0: /* 8086 undocumented; on 8086 0xC0 decodes identically to 0xC2 (b1100 00X0) */
 		case 0xC2:
 			ret_intra_add_imm(cpu);
 			break;
-		case 0xC1: // 8086 undocumented; on 8086 0xC1 decodes identically to 0xC3 (b1100 00X1)
+		case 0xC1: /* 8086 undocumented; on 8086 0xC1 decodes identically to 0xC3 (b1100 00X1) */
 		case 0xC3:
 			ret_intra(cpu);
 			break;
@@ -3027,11 +2984,11 @@ static int i8086_decode_opcode(I8086* cpu) {
 		case 0xC7:
 			mov_rm_imm(cpu);
 			break;
-		case 0xC8: // 8086 undocumented; on 8086 0xC8 decodes identically to 0xCA (b1100 10X0)
+		case 0xC8: /* 8086 undocumented; on 8086 0xC8 decodes identically to 0xCA (b1100 10X0) */
 		case 0xCA:
 			ret_inter_add_imm(cpu);
 			break;
-		case 0xC9: // 8086 undocumented; on 8086 0xC9 decodes identically to 0xCB (b1100 10X1)
+		case 0xC9: /* 8086 undocumented; on 8086 0xC9 decodes identically to 0xCB (b1100 10X1) */
 		case 0xCB:
 			ret_inter(cpu);
 			break;
@@ -3052,14 +3009,15 @@ static int i8086_decode_opcode(I8086* cpu) {
 		case 0xD1:
 		case 0xD2:
 		case 0xD3:
-			return i8086_decode_opcode_d0(cpu);
+			i8086_decode_opcode_d0(cpu);
+			break;
 		case 0xD4:
 			aam(cpu);
 			break;
 		case 0xD5:
 			aad(cpu);
 			break;
-		case 0xD6: // 8086 undocumented
+		case 0xD6: /* 8086 undocumented; Set AL to Carry */
 			salc(cpu);
 			break;
 		case 0xD7:
@@ -3118,6 +3076,7 @@ static int i8086_decode_opcode(I8086* cpu) {
 			break;
 
 		case 0xF0:
+		case 0xF1: /* 8086 undocumented; Decodes identically to 0xF0 */
 			return lock(cpu);
 		case 0xF2:
 		case 0xF3:
@@ -3130,7 +3089,8 @@ static int i8086_decode_opcode(I8086* cpu) {
 			break;
 		case 0xF6:
 		case 0xF7:
-			return i8086_decode_opcode_f6(cpu);
+			i8086_decode_opcode_f6(cpu);
+			break;
 		case 0xF8:
 			clc(cpu);
 			break;
@@ -3151,9 +3111,8 @@ static int i8086_decode_opcode(I8086* cpu) {
 			break;
 		case 0xFE:
 		case 0xFF:
-			return i8086_decode_opcode_fe(cpu);
-		default:
-			return I8086_DECODE_UNDEFINED;
+			i8086_decode_opcode_fe(cpu);
+			break;
 	}
 	return I8086_DECODE_OK;
 }

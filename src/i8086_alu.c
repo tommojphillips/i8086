@@ -230,6 +230,7 @@ void alu_and8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 	*x1 &= x2;
 	CF = 0;
 	OF = 0;
+	AF = 0;
 	SET_SF8(*x1);
 	SET_PF8(*x1);
 	SET_ZF8(*x1);
@@ -238,6 +239,7 @@ void alu_xor8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 	*x1 ^= x2;
 	CF = 0;
 	OF = 0;
+	AF = 0;
 	SET_SF8(*x1);
 	SET_PF8(*x1);
 	SET_ZF8(*x1);
@@ -246,6 +248,7 @@ void alu_or8(I8086* cpu, uint8_t* x1, uint8_t x2) {
 	*x1 |= x2;
 	CF = 0;
 	OF = 0;
+	AF = 0;
 	SET_SF8(*x1);
 	SET_PF8(*x1);
 	SET_ZF8(*x1);
@@ -504,6 +507,7 @@ void alu_and16(I8086* cpu, uint16_t* x1, uint16_t x2) {
 	*x1 &= x2;
 	CF = 0;
 	OF = 0;
+	AF = 0;
 	SET_SF16(*x1);
 	SET_PF16(*x1);
 	SET_ZF16(*x1);
@@ -512,6 +516,7 @@ void alu_xor16(I8086* cpu, uint16_t* x1, uint16_t x2) {
 	*x1 ^= x2;
 	CF = 0;
 	OF = 0;
+	AF = 0;
 	SET_SF16(*x1);
 	SET_PF16(*x1);
 	SET_ZF16(*x1);
@@ -520,6 +525,7 @@ void alu_or16(I8086*  cpu, uint16_t* x1, uint16_t x2) {
 	*x1 |= x2;
 	CF = 0;
 	OF = 0;
+	AF = 0;
 	SET_SF16(*x1);
 	SET_PF16(*x1);
 	SET_ZF16(*x1);
