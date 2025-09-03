@@ -1099,16 +1099,28 @@ static void pop_reg(I8086* cpu) {
 	CYCLES(8);
 }
 static void push_rm(I8086* cpu) {
-	/* Push R/M (FF, R/M reg = 110) b11111111 */
+	/* Push R/M (FE/FF, R/M reg = 110) b1111111W */
 
 	/* NOTE: SP needs to be decemented prior to reading the register.
 		This is so when pushing SP the NEW SP is pushed. */
 
-	SP -= 2;
-	op16_t op16 = modrm_get_op16(cpu);
-	uint16_t tmp = op16_read(cpu, op16);
-	write_word(cpu, SS, SP, tmp);
-
+	if (W) {
+		SP -= 2;
+		op16_t op16 = modrm_get_op16(cpu);
+		uint16_t tmp = op16_read(cpu, op16);
+		write_word(cpu, SS, SP, tmp);
+	}
+	else {
+		/* Undocumented instruction; PUSH byte R/M.
+			This is based on the JSON 8086 v2 undefined opcode tests. 
+			i can put any byte in the hi byte and the tests still pass
+			so i'm just assuming FF. SP is decremented by 2 so something
+			def gets write there. Hmm. */
+		SP -= 2;
+		op8_t op8 = modrm_get_op8(cpu);
+		uint16_t tmp = 0xFF00 | op8_read(cpu, op8);
+		write_word(cpu, SS, SP, tmp);
+	}
 	TRANSFERS(2);
 	CYCLES(16);
 }
@@ -1634,18 +1646,89 @@ static void jmp_inter_direct(I8086* cpu) {
 }
 
 static void jmp_intra_indirect(I8086* cpu) {
-	/* Jump near indirect (FF, R/M reg = 100) b11111111 */	
-	op16_t rm = modrm_get_op16(cpu);
-	IP = op16_read(cpu, rm);
+	/* Jump near indirect (FE/FF, R/M reg = 100) b1111111W */
+
+	if (W) {
+		op16_t rm = modrm_get_op16(cpu);
+		IP = op16_read(cpu, rm);
+	}
+	else {
+		/* Undocumented instruction; JMP near byte R/M.
+			This is based on the JSON 8086 v2 undefined opcode tests.
+			02.09.2025 - tommojphillips */
+
+		op8_t rm = modrm_get_op8(cpu);
+		if (cpu->modrm.mod == 0b11) {
+			/* For a 8bit register, the pair is actually reversed;
+				Toggle bit3 in the rm field of the modrm byte to
+				access the other 8bit register in the pair. */
+			cpu->modrm.rm ^= 0x4;
+			op8_t rm2 = modrm_get_op8(cpu);
+			IP = op8_read(cpu, rm);
+			IP |= ((uint16_t)op8_read(cpu, rm2) << 8);
+		}
+		else {
+			/* For a memory location; Set the hi byte to FF. */
+			IP = 0xFF00 | op8_read(cpu, rm);
+		}
+	}
+
 	TRANSFERS_RM(0, 1);
 	CYCLES_RM(11, 18);
 }
 static void jmp_inter_indirect(I8086* cpu) {
-	/* Jump inter indirect (FF, R/M reg = 101) b11111111 */
-	uint16_t segment = modrm_get_segment(cpu);
-	uint16_t offset = modrm_get_offset(cpu);
-	IP = read_word(cpu, segment, offset);
-	CS = read_word(cpu, segment, offset + 2);
+	/* Jump far indirect (FE/FF, R/M reg = 101) b1111111W */
+
+	if (W) {
+		if (cpu->modrm.mod == 0b11) {
+			/* Undocumented instruction; JMP far word REG16.
+				This is based on the JSON 8086 v2 undefined opcode tests.
+				02.09.2025 - tommojphillips */
+
+			/* IP is set to OLD_IP - 4. */
+			IP = IP - cpu->instruction_len - 4;
+
+			/* CS is read respecting segment override [SR + 4].
+				defaults to DS. */
+			if (cpu->segment_prefix == 0xFF) {
+				cpu->segment_prefix = SEG_DS;
+			}
+			uint16_t segment = modrm_get_segment(cpu);
+			CS = read_word(cpu, segment, 4);
+		}
+		else {
+			uint16_t segment = modrm_get_segment(cpu);
+			uint16_t offset = modrm_get_offset(cpu);
+			IP = read_word(cpu, segment, offset);
+			CS = read_word(cpu, segment, offset + 2);
+		}
+	}
+	else {
+		/* Undocumented instruction; JMP far byte R/M.
+			This is based on the JSON 8086 v2 undefined opcode tests.
+			02.09.2025 - tommojphillips */
+
+		if (cpu->modrm.mod == 0b11) {
+			/* IP is set to OLD_IP - 4. */
+			IP = IP - cpu->instruction_len - 4;
+
+			/* CS is set to [DS + 4]. Set the hi byte to FF. */
+			CS = 0xFF00 | read_byte(cpu, cpu->segments[SEG_DS], 4);
+		}
+		else {
+			/* Get Mod R/M offset; fetch displacement (if applicable); incrementing IP. */
+			uint16_t offset = modrm_get_offset(cpu);
+
+			/* IP is read respecting segment override. Set the hi byte to FF. */
+			uint16_t segment = modrm_get_segment(cpu);
+			IP = 0xFF00 | read_byte(cpu, segment, offset);
+
+			/* CS is read disregarding segment override. Set the hi byte to FF. */
+			cpu->segment_prefix = 0xFF;
+			segment = modrm_get_segment(cpu);
+			CS = 0xFF00 | read_byte(cpu, segment, offset);
+		}
+	}
 	TRANSFERS(2);
 	CYCLES(24);
 }
@@ -1683,35 +1766,124 @@ static void call_inter_direct(I8086* cpu) {
 }
 
 static void call_intra_indirect(I8086* cpu) {
-	/* Call mem/reg (FF, R/M reg = 010) b11111111 */
+	/* Call near R/M (FE/FF, R/M reg = 010) b1111111W */
 
-	/* NOTE: We need to read ip prior to pushing ip
-		This is so if SP = R/M,
-		it doesn't write over it when pushing the ip
-		This is based on the JSON 8088 tests. SingleStepTests */
+	/* NOTE: We need to read ip prior to pushing it.
+		This is so if SP = [R/M],
+		it doesn't write over it when pushing ip.
+		This is based on the JSON 8088 tests. */
 
-	op16_t rm = modrm_get_op16(cpu);
-	uint16_t ip = op16_read(cpu, rm);
-	push_word(cpu, IP);
+	uint16_t ip = 0;
+
+	if (W) {
+		op16_t rm = modrm_get_op16(cpu);
+		ip = op16_read(cpu, rm);
+		push_word(cpu, IP);
+	}
+	else {
+		/* Undocumented instruction; CALL near byte R/M.
+			This is based on the JSON 8086 v2 undefined opcode tests.
+			02.09.2025 - tommojphillips */
+
+		op8_t rm = modrm_get_op8(cpu);
+		if (cpu->modrm.mod == 0b11) {
+			/* For a 8bit register, the pair is actually reversed;
+				Toggle bit3 in the rm field of the modrm byte to
+				access the other 8bit register in the pair. */
+			cpu->modrm.rm ^= 0x4;
+			op8_t rm2 = modrm_get_op8(cpu);
+			ip = op8_read(cpu, rm);
+			ip |= ((uint16_t)op8_read(cpu, rm2) << 8);
+		}
+		else {
+			/* For a memory location; Set the hi byte to FF. */
+			ip = 0xFF00 | op8_read(cpu, rm);
+		}
+
+		/* Only the lo byte of IP are pushed to the stack. 
+			i can put any byte in the hi byte and the tests still pass
+			so i'm just assuming FF. SP is decremented by 2 so something
+			def gets write there. Hmm. */
+		push_word(cpu, 0xFF00 | (IP & 0xFF));
+	}
 	IP = ip;
-	
+
 	TRANSFERS_RM(1, 2);
 	CYCLES_RM(16, 21);
 }
 static void call_inter_indirect(I8086* cpu) {
-	/* Call mem (FF, R/M reg = 011) b11111111 */
+	/* Call far R/M (FE/FF, R/M reg = 011) b1111111W */
 
-	/* NOTE: We need to read ip,cs prior to pushing ip,cs
-		This is so if SP = R/M, 
-		it doesn't write over it when pushing the ip,cs
-		This is based on the JSON 8088 tests. SingleStepTests */
+	/* NOTE: We need to read ip,cs prior to pushing them.
+		This is so if SP = [R/M],
+		it doesn't write over it when pushing ip,cs.
+		This is based on the JSON 8088 tests. */
+	
+	uint16_t ip = 0;
+	uint16_t cs = 0;
 
-	uint16_t segment = modrm_get_segment(cpu);
-	uint16_t offset = modrm_get_offset(cpu);
-	uint16_t ip = read_word(cpu, segment, offset);
-	uint16_t cs = read_word(cpu, segment, offset + 2);
-	push_word(cpu, CS);
-	push_word(cpu, IP);
+	if (W) {
+
+		if (cpu->modrm.mod == 0b11) {
+			/* Undocumented instruction; CALL far word REG16.
+				This is based on the JSON 8086 v2 undefined opcode tests.
+				02.09.2025 - tommojphillips */
+
+			/* IP is set to OLD_IP - 4. */
+			ip = IP - cpu->instruction_len - 4;
+
+			/* CS is read respecting segment override [SR + 4].
+				defaults to DS. */
+			if (cpu->segment_prefix == 0xFF) {
+				cpu->segment_prefix = SEG_DS;
+			}
+			uint16_t segment = modrm_get_segment(cpu);
+			cs = read_word(cpu, segment, 4);
+		}
+		else {
+			uint16_t segment = modrm_get_segment(cpu);
+			uint16_t offset = modrm_get_offset(cpu);
+			ip = read_word(cpu, segment, offset);
+			cs = read_word(cpu, segment, offset + 2);
+		}
+
+		push_word(cpu, CS);
+		push_word(cpu, IP);
+	}
+	else {
+		/* Undocumented instruction; CALL far byte R/M.
+			This is based on the JSON 8086 v2 undefined opcode tests.
+			02.09.2025 - tommojphillips */
+		
+		if (cpu->modrm.mod == 0b11) {
+			/* IP is set to OLD_IP - 4. */
+			ip = IP - cpu->instruction_len - 4;
+
+			/* CS is set to [DS + 4]. Set the hi byte to FF. */
+			cs = 0xFF00 | read_byte(cpu, cpu->segments[SEG_DS], 4);
+		}
+		else {
+			/* Get Mod R/M offset; fetch displacement (if applicable); incrementing IP. */
+			uint16_t offset = modrm_get_offset(cpu);
+
+			/* IP is read respecting segment override. Set the hi byte to FF. */
+			uint16_t segment = modrm_get_segment(cpu);
+			ip = 0xFF00 | read_byte(cpu, segment, offset);
+
+			/* CS is read disregarding segment override. Set the hi byte to FF. */
+			cpu->segment_prefix = 0xFF;
+			segment = modrm_get_segment(cpu);
+			cs = 0xFF00 | read_byte(cpu, segment, offset);
+		}
+
+		/* Only the lo byte of CS and IP are pushed to the stack. 
+			i can put any byte in the hi byte and the tests still pass
+			so i'm just assuming FF. SP is decremented by 2 so something
+			def gets write there. Hmm. */
+		push_word(cpu, 0xFF00 | (CS & 0xFF));
+		push_word(cpu, 0xFF00 | (IP & 0xFF));
+	}
+
 	IP = ip;
 	CS = cs;
 	TRANSFERS(4);
@@ -2480,52 +2652,31 @@ static int i8086_decode_opcode_f6(I8086* cpu) {
 static int i8086_decode_opcode_fe(I8086* cpu) {
 	/* FE/FF b1111111W (Group 2) */
 	fetch_modrm(cpu);
-	if (W) {
-		switch (cpu->modrm.reg) {
-			case 0b000:
-				inc_rm(cpu);
-				break;
-			case 0b001:
-				dec_rm(cpu);
-				break;
-			case 0b010:
-				call_intra_indirect(cpu);
-				break;
-			case 0b011:
-				call_inter_indirect(cpu);
-				break;
-			case 0b100:
-				jmp_intra_indirect(cpu);
-				break;
-			case 0b101:
-				jmp_inter_indirect(cpu);
-				break;
-			case 0b110:
-				push_rm(cpu);
-				break;			
-			case 0b111:
-				push_rm(cpu);
-				break;
-				//return I8086_DECODE_UNDEFINED;
-		}
-	}
-	else {
-		switch (cpu->modrm.reg) {
-			case 0b000:
-				inc_rm(cpu);
-				break;
-			case 0b001:
-				dec_rm(cpu);
-				break;
-
-			case 0b010:
-			case 0b011:
-			case 0b100:
-			case 0b101:
-			case 0b110:
-			case 0b111:
-				return I8086_DECODE_UNDEFINED;
-		}
+	switch (cpu->modrm.reg) {
+		case 0b000:
+			inc_rm(cpu);
+			break;
+		case 0b001:
+			dec_rm(cpu);
+			break;
+		case 0b010:
+			call_intra_indirect(cpu);
+			break;
+		case 0b011:
+			call_inter_indirect(cpu);
+			break;
+		case 0b100:
+			jmp_intra_indirect(cpu);
+			break;
+		case 0b101:
+			jmp_inter_indirect(cpu);
+			break;
+		case 0b110:
+			push_rm(cpu);
+			break;
+		case 0b111: /* 8086 undocumented; Decodes identically to b110 */
+			push_rm(cpu);
+			break;
 	}
 	return I8086_DECODE_OK;
 }
