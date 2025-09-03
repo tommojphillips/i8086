@@ -21,8 +21,8 @@ ip = op8_read(cpu, rm);
 /* Read the second 8-bit register as the high byte of IP. */
 ip |= ((uint16_t)op8_read(cpu, rm2) << 8);
 
-/* Push return address */
-push_word(cpu, IP);
+/* Push return address; Only the low byte of IP is pushed. Set the high byte to 0xFF. */
+push_word(cpu, 0xFF00 | (IP & 0xFF));
 
 /* Set jump address */
 IP = ip;
@@ -36,8 +36,8 @@ op8_t rm = modrm_get_op8(cpu);
 /* Read the memory value as the low byte of IP. Set the high byte of IP to 0xFF. */
 ip = 0xFF00 | op8_read(cpu, rm);
 
-/* Push return address */
-push_word(cpu, IP);
+/* Push return address; Only the low byte of IP is pushed. Set the high byte to 0xFF. */
+push_word(cpu, 0xFF00 | (IP & 0xFF));
 
 /* Set jump address */
 IP = ip;
@@ -53,9 +53,9 @@ ip = IP - cpu->instruction_len - 4;
     Set the high byte of CS to 0xFF. */
 cs = 0xFF00 | read_byte(cpu, cpu->segments[SEG_DS], 4);
 
-/* Push return address */
-push_word(cpu, CS & 0xFF);
-push_word(cpu, IP & 0xFF);
+/* Push return address; Only the low byte of CS and IP are pushed. Set the high byte to 0xFF. */
+push_word(cpu, 0xFF00 | (CS & 0xFF));
+push_word(cpu, 0xFF00 | (IP & 0xFF));
 
 /* Set jump address */
 CS = cs;
@@ -72,14 +72,14 @@ uint16_t offset = modrm_get_offset(cpu);
 uint16_t segment = modrm_get_segment(cpu);
 ip = 0xFF00 | read_byte(cpu, segment, offset);
 
-/* CS is read disregarding segment override. Set the hi byte to FF. */
+/* CS is read disregarding segment override. Set the high byte to 0xFF. */
 cpu->segment_prefix = 0xFF;
 segment = modrm_get_segment(cpu);
 cs = 0xFF00 | read_byte(cpu, segment, offset);
 
-/* Push return address */
-push_word(cpu, CS);
-push_word(cpu, IP);
+/* Push return address; Only the low byte of CS and IP are pushed. Set the high byte to 0xFF. */
+push_word(cpu, 0xFF00 | (CS & 0xFF));
+push_word(cpu, 0xFF00 | (IP & 0xFF));
 
 /* Set jump address */
 CS = cs;
