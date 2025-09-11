@@ -12,8 +12,8 @@
 #define PSW cpu->status.word
 
 #define DBZ cpu->dbz
-#define NMI cpu->pins.nmi
-#define INTR cpu->pins.intr
+#define NMI cpu->nmi
+#define INTR cpu->intr
 
 #define SF cpu->status.sf
 #define CF cpu->status.cf
@@ -62,7 +62,7 @@
 // byte/word operation. b00 = byte; b01 = word; b11 = byte sign extended to word
 #define SW (cpu->opcode & 0x3)
 
-// seg register
+// segment register. es=b00; cs=b01; ss=b10; ds=b11
 #define SR ((cpu->opcode >> 0x3) & 0x3)
 
 // 0 = (count = 1); 1 = (count = CL)
@@ -74,19 +74,14 @@
 // jump condition
 #define CCCC (cpu->opcode & 0x0F)
 
-/* Get segment override prefix */
-#define GET_SEG_OVERRIDE(seg) ((cpu->segment_prefix != 0xFF) ? cpu->segment_prefix : seg)
-
-/* Get 20bit address SEG:ADDR */
-#define GET_ADDR(seg, addr) ((uint20_t)(cpu->segments[seg] << 4) + (addr & 0xFFFF))
-
 /* Get 20bit address SEG:ADDR */
 #define PHYS_ADDRESS(seg, offset) ((((uint20_t)seg << 4) + ((offset) & 0xFFFF)) & 0xFFFFF)
 
-#define SEG_DEFAULT_OR_OVERRIDE(seg) (cpu->segments[GET_SEG_OVERRIDE(seg)])
+/* Get default or override segment index */
+#define GET_SEG_OVERRIDE(seg) ((cpu->segment_prefix != 0xFF) ? cpu->segment_prefix : seg)
 
-/* Get 20bit data segment address DS:ADDR */
-#define DATA_ADDR(addr) GET_ADDR(GET_SEG_OVERRIDE(SEG_DS), addr)
+/* Get default or override segment register */
+#define SEG_DEFAULT_OR_OVERRIDE(seg) (cpu->segments[GET_SEG_OVERRIDE(seg)])
 
 /* Read byte from IO port word */
 #define READ_IO_WORD(port) cpu->funcs.read_io_word(port)
@@ -99,12 +94,6 @@
 
 /* Write byte to IO port */
 #define WRITE_IO_BYTE(port,value) cpu->funcs.write_io_byte(port, value)
-
-/* Get ptr to 8bit register */
-#define GET_REG8(reg) get_reg8(cpu, reg)
-
-/* Get ptr to 16bit register */
-#define GET_REG16(reg) (&cpu->registers[reg & 7].r16)
 
 /* Get ptr to 16bit segment */
 #define GET_SEG(seg) (&cpu->segments[seg & 3])
@@ -128,6 +117,36 @@
 
 /* Internal flag F1Z. Signals which rep (repz/repnz) is in use for this decode cycle */
 #define F1Z (cpu->internal_flags & INTERNAL_FLAG_F1Z)
+
+/* 8bit r/m operand */
+typedef struct {
+	uint8_t is_reg;
+	union {
+		uint8_t reg_index;
+		struct {
+			uint16_t segment;
+			uint16_t offset;
+		} mem;
+	} u;
+} OPERAND8;
+
+/* 16bit r/m operand */
+typedef struct {
+	uint8_t is_reg;
+	union {
+		uint8_t reg_index;
+		struct {
+			uint16_t segment;
+			uint16_t offset;
+		} mem;
+	} u;
+} OPERAND16;
+
+static uint8_t op8_read(I8086* cpu, OPERAND8 op8);
+static void op8_write(I8086* cpu, OPERAND8 op8, uint8_t v);
+
+static uint16_t op16_read(I8086* cpu, OPERAND16 op16);
+static void op16_write(I8086* cpu, OPERAND16 op16, uint16_t v);
 
 static uint8_t read_byte(I8086* cpu, uint16_t segment, uint16_t offset) {
 	return cpu->funcs.read_mem_byte(PHYS_ADDRESS(segment, offset));
@@ -156,9 +175,30 @@ static uint16_t fetch_word(I8086* cpu) {
 	return v;
 }
 
+static void push_op8(I8086* cpu, OPERAND8 op8) {
+	SP -= 2;
+	uint8_t tmp = op8_read(cpu, op8);
+	write_byte(cpu, SS, SP, tmp);
+}
+static void push_byte(I8086* cpu, uint8_t value) {
+	SP -= 2;
+	write_byte(cpu, SS, SP, value);
+}
+
+static void push_op16(I8086* cpu, OPERAND16 op16) {
+	SP -= 2;
+	uint16_t tmp = op16_read(cpu, op16);
+	write_word(cpu, SS, SP, tmp);
+}
 static void push_word(I8086* cpu, uint16_t value) {
 	SP -= 2;
 	write_word(cpu, SS, SP, value);
+}
+
+static void pop_op16(I8086* cpu, OPERAND16 op16) {
+	uint16_t tmp = read_word(cpu, SS, SP);
+	SP += 2;
+	op16_write(cpu, op16, tmp);
 }
 static void pop_word(I8086* cpu, uint16_t* value) {
 	*value = read_word(cpu, SS, SP);
@@ -170,6 +210,9 @@ void i8086_intr(I8086* cpu, uint8_t type) {
 		INTR = 1;
 		cpu->intr_type = type;
 	}
+}
+void i8086_nmi(I8086* cpu) {
+	NMI = 1;
 }
 void i8086_int(I8086* cpu, uint8_t type) {
 
@@ -192,12 +235,7 @@ void i8086_int(I8086* cpu, uint8_t type) {
 	TF = 0;
 }
 static void i8086_check_interrupts(I8086* cpu) {
-
-	/* 3 things can delay an interrupt:
-		1.) An interrupt delay micro-instruction.
-		2.) An instruction that modifies a segment register. MOV SEG,xxx or POP SEG
-		3.) A prefix byte. */
-
+		
 	if (cpu->int_delay == 1) {
 		cpu->int_delay = 0;
 		return;
@@ -232,23 +270,28 @@ static void i8086_check_interrupts(I8086* cpu) {
 	cpu->tf_latch = TF;
 }
 
-static uint8_t* get_reg8(I8086* cpu, int reg) {
-	/* Get 8bit register ptr
-		Registers are layed out in memory as: AX:{ LO, HI }, CX:{ LO, HI }, DX:{ LO, HI }, BX:{ LO, HI } etc
-		The lower 4 16bit registers can be indexed as 8bit registers.
-		Therefore bit1 and bit2 refer to the selected register pair (AX/CX/DX/BX).
-		bit3 tells us if the LO byte (0) or the HI byte (1) of the register pair is selected
-		if bit3 is clr. bits b00, b01, b10, b11 refer to the LO byte of the register. (AL, CL, DL, BL)
-		if bit3 is set. bits b00, b01, b10, b11 refer to the HI byte of the register. (AH, CH, DH, BH) */
-
-	//return (&cpu->registers[reg & 3].l + ((reg >> 2) & 1));
-
+static uint8_t reg8_read(I8086* cpu, uint8_t reg) {
 	if (reg & 0x4) {
-		return &cpu->registers[reg & 0x3].h;
+		return cpu->registers[reg & 0x3].h;
 	}
 	else {
-		return &cpu->registers[reg & 0x3].l;
+		return cpu->registers[reg & 0x3].l;
 	}
+}
+static void reg8_write(I8086* cpu, uint8_t reg, uint8_t v) {
+	if (reg & 0x4) {
+		cpu->registers[reg & 0x3].h = v;
+	}
+	else {
+		cpu->registers[reg & 0x3].l = v;
+	}
+}
+
+static uint16_t reg16_read(I8086* cpu, uint8_t reg) {
+	return cpu->registers[reg & 0x7].r16;
+}
+static void reg16_write(I8086* cpu, uint8_t reg, uint16_t v) {
+	cpu->registers[reg & 0x7].r16 = v;
 }
 
 /* Mod R/M */
@@ -257,13 +300,13 @@ static uint8_t* get_reg8(I8086* cpu, int reg) {
 static uint16_t modrm_get_base_offset(I8086* cpu) {
 	switch (cpu->modrm.rm) {
 		case 0b000: // base rel indexed - BX + SI
-			return (BX + SI) & 0xFFFF;
+			return (BX + SI);
 		case 0b001: // base rel indexed - BX + DI
-			return (BX + DI) & 0xFFFF;
+			return (BX + DI);
 		case 0b010: // base rel indexed stack - BP + SI
-			return (BP + SI) & 0xFFFF;
+			return (BP + SI);
 		case 0b011: // base rel indexed stack - BP + DI
-			return (BP + DI) & 0xFFFF;
+			return (BP + DI);
 		case 0b100: // implied SI
 			return SI;
 		case 0b101: // implied DI
@@ -279,198 +322,188 @@ static uint16_t modrm_get_base_offset(I8086* cpu) {
 /* Use the mod r/m byte to calculate the selected segment */
 static uint16_t modrm_get_segment(I8086* cpu) {
 	if (cpu->segment_prefix != 0xFF) {
-		return cpu->segments[cpu->segment_prefix & 0x3];   // CS/DS/ES/SS override
+		cpu->ea_segment = cpu->segments[cpu->segment_prefix & 0x3]; // CS/DS/ES/SS override
 	}
-
-	// mod = 00 special case for r/m=110 -> [disp16] uses DS
-	if (cpu->modrm.mod == 0b00 && cpu->modrm.rm == 0b110) {
-		return cpu->segments[SEG_DS];
+	else {
+		// mod = 00 special case for r/m=110 -> [disp16] uses DS
+		if (cpu->modrm.mod == 0b00 && cpu->modrm.rm == 0b110) {
+			cpu->ea_segment = cpu->segments[SEG_DS];
+		}
+		else {
+			switch (cpu->modrm.rm) {
+				case 0b010: // [BP+SI]
+				case 0b011: // [BP+DI]
+				case 0b110: // [BP] (mod != 00)
+					cpu->ea_segment = cpu->segments[SEG_SS]; // defaults to SS
+					break;
+				default:
+					cpu->ea_segment = cpu->segments[SEG_DS]; // everything else defaults to DS
+					break;
+			}
+		}
 	}
-
-	switch (cpu->modrm.rm) {
-		case 0b010: // [BP+SI]
-		case 0b011: // [BP+DI]
-		case 0b110: // [BP] (mod != 00)
-			return cpu->segments[SEG_SS];  // defaults to SS
-		default:
-			return cpu->segments[SEG_DS];  // everything else defaults to DS
-	}
+	return cpu->ea_segment;
 }
 
 /* Use the mod r/m byte to calculate a 16-bit address (offset) */
 static uint16_t modrm_get_offset(I8086* cpu) {
-	uint16_t offset = 0;
-
 	switch (cpu->modrm.mod) {
 		case 0b00:
 			if (cpu->modrm.rm == 0b110) {
-				offset = fetch_word(cpu);
+				cpu->ea_offset = fetch_word(cpu);
 				CYCLES(6);
 			}
 			else {
-				offset = modrm_get_base_offset(cpu);
+				cpu->ea_offset = modrm_get_base_offset(cpu);
 			}
 			break;
 
 		case 0b01: {
 			int8_t disp8 = (int8_t)fetch_byte(cpu);
-			offset = (modrm_get_base_offset(cpu) + disp8) & 0xFFFF;
+			cpu->ea_offset = (modrm_get_base_offset(cpu) + disp8) & 0xFFFF;
 			CYCLES(4);
 		} break;
 
 		case 0b10: {
 			int16_t disp16 = (int16_t)fetch_word(cpu);
-			offset = (modrm_get_base_offset(cpu) + disp16) & 0xFFFF;
+			cpu->ea_offset = (modrm_get_base_offset(cpu) + disp16) & 0xFFFF;
 			CYCLES(4);
 		} break;
 
 		// case 0b11: register mode never calls this
 	}
-
-	return offset;
+	return cpu->ea_offset;
 }
 
-typedef struct {
-	uint8_t is_reg;
-	uint8_t* reg;
-	uint16_t segment;
-	uint16_t offset;
-} op8_t;
-
-static op8_t modrm_get_op8(I8086* cpu) {
-	op8_t op8 = { 0 };
+static OPERAND8 modrm_get_op8(I8086* cpu) {
+	OPERAND8 op8 = { 0 };
 	if (cpu->modrm.mod == 0b11) {
 		op8.is_reg = 1;
-		op8.reg = GET_REG8(cpu->modrm.rm);
+		op8.u.reg_index = cpu->modrm.rm;
 	}
 	else {
 		op8.is_reg = 0;
-		op8.segment = modrm_get_segment(cpu);
-		op8.offset = modrm_get_offset(cpu);
+		op8.u.mem.segment = modrm_get_segment(cpu);
+		op8.u.mem.offset = modrm_get_offset(cpu);
 	}
 	return op8;
 }
-static op8_t mem_get_op8(uint16_t segment, uint16_t offset) {
-	op8_t op8 = { 0 };
+static OPERAND8 mem_get_op8(uint16_t segment, uint16_t offset) {
+	OPERAND8 op8 = { 0 };
 	op8.is_reg = 0;
-	op8.segment = segment;
-	op8.offset = offset;
+	op8.u.mem.segment = segment;
+	op8.u.mem.offset = offset;
 	return op8;
 }
-static uint8_t op8_read(I8086* cpu, op8_t op8) {
+static uint8_t op8_read(I8086* cpu, OPERAND8 op8) {
 	if (op8.is_reg) {
-		return *op8.reg;
+		return reg8_read(cpu, op8.u.reg_index);
 	}
 	else {
-		return read_byte(cpu, op8.segment, op8.offset);
+		return read_byte(cpu, op8.u.mem.segment, op8.u.mem.offset);
 	}
 }
-static void op8_write(I8086* cpu, op8_t op8, uint8_t v) {
+static void op8_write(I8086* cpu, OPERAND8 op8, uint8_t v) {
 	if (op8.is_reg) {
-		*op8.reg = v;
+		reg8_write(cpu, op8.u.reg_index, v);
 	}
 	else {
-		write_byte(cpu, op8.segment, op8.offset, v);
+		write_byte(cpu, op8.u.mem.segment, op8.u.mem.offset, v);
 	}
 }
 
 // Resolve bit8 ModR/M + reg with D bit, then execute a binary op. with writeback
 // The op must be of the form: void op(I8086*, uint8_t*, uint8_t);
-static inline void exec_bin_op8(I8086* cpu, void (*op)(I8086*, uint8_t*, uint8_t)) {
-	op8_t rm = modrm_get_op8(cpu);
-	uint8_t* reg = GET_REG8(cpu->modrm.reg);
+static void exec_bin_op8(I8086* cpu, void (*op)(I8086*, uint8_t*, uint8_t)) {
+	OPERAND8 rm = modrm_get_op8(cpu);
+	uint8_t reg = reg8_read(cpu, cpu->modrm.reg);
 	uint8_t tmp = op8_read(cpu, rm);
 	if (D) {
-		op(cpu, reg, tmp);
+		op(cpu, &reg, tmp);
+		reg8_write(cpu, cpu->modrm.reg, reg);
 	}
 	else {
-		op(cpu, &tmp, *reg);
+		op(cpu, &tmp, reg);
 		op8_write(cpu, rm, tmp);
 	}
 }
 // Resolve bit8 ModR/M + reg with D bit, then execute a binary op. no writeback
 // The op must be of the form: void op(I8086*, uint8_t, uint8_t);
-static inline void exec_bin_op8_ro(I8086* cpu, void (*op)(I8086*, uint8_t, uint8_t)) {
-	op8_t rm = modrm_get_op8(cpu);
-	uint8_t* reg = GET_REG8(cpu->modrm.reg);
+static void exec_bin_op8_ro(I8086* cpu, void (*op)(I8086*, uint8_t, uint8_t)) {
+	OPERAND8 rm = modrm_get_op8(cpu);
+	uint8_t reg = reg8_read(cpu, cpu->modrm.reg);
 	uint8_t tmp = op8_read(cpu, rm);
 	if (D) {
-		op(cpu, *reg, tmp);
+		op(cpu, reg, tmp);
 	}
 	else {
-		op(cpu, tmp, *reg);
+		op(cpu, tmp, reg);
 	}
 }
 
-typedef struct {
-	uint8_t is_reg;
-	uint16_t* reg;
-	uint16_t segment;
-	uint16_t offset;
-} op16_t;
-
-static op16_t modrm_get_op16(I8086* cpu) {
-	op16_t op16 = { 0 };
+static OPERAND16 modrm_get_op16(I8086* cpu) {
+	OPERAND16 op16 = { 0 };
 	if (cpu->modrm.mod == 0b11) {
 		op16.is_reg = 1;
-		op16.reg = GET_REG16(cpu->modrm.rm);
+		op16.u.reg_index = cpu->modrm.rm;
 	}
 	else {
 		op16.is_reg = 0;
-		op16.segment = modrm_get_segment(cpu);
-		op16.offset = modrm_get_offset(cpu);
+		op16.u.mem.segment = modrm_get_segment(cpu);
+		op16.u.mem.offset = modrm_get_offset(cpu);
 	}
 	return op16;
 }
-static op16_t mem_get_op16(uint16_t segment, uint16_t offset) {
-	op16_t op16 = { 0 };
+static OPERAND16 mem_get_op16(uint16_t segment, uint16_t offset) {
+	OPERAND16 op16 = { 0 };
 	op16.is_reg = 0;
-	op16.segment = segment;
-	op16.offset = offset;
+	op16.u.mem.segment = segment;
+	op16.u.mem.offset = offset;
 	return op16;
 }
-static uint16_t op16_read(I8086* cpu, op16_t op16) {
+static uint16_t op16_read(I8086* cpu, OPERAND16 op16) {
 	if (op16.is_reg) {
-		return *op16.reg;
+		return cpu->registers[op16.u.reg_index].r16;
 	}
 	else {
-		return read_word(cpu, op16.segment, op16.offset);
+		return read_word(cpu, op16.u.mem.segment, op16.u.mem.offset);
 	}
 }
-static void op16_write(I8086* cpu, op16_t op16, uint16_t v) {
+static void op16_write(I8086* cpu, OPERAND16 op16, uint16_t v) {
 	if (op16.is_reg) {
-		*op16.reg = v;
+		cpu->registers[op16.u.reg_index].r16 = v;
 	}
 	else {
-		write_word(cpu, op16.segment, op16.offset, v);
+		write_word(cpu, op16.u.mem.segment, op16.u.mem.offset, v);
 	}
 }
 
 // Resolve bit16 ModR/M + reg with D bit, then execute a binary op. with writeback
 // The op must be of the form: void op(I8086*, uint16_t*, uint16_t);
-static inline void exec_bin_op16(I8086* cpu, void (*op)(I8086*, uint16_t*, uint16_t)) {
-	op16_t rm = modrm_get_op16(cpu);
-	uint16_t* reg = GET_REG16(cpu->modrm.reg);
+static void exec_bin_op16(I8086* cpu, void (*op)(I8086*, uint16_t*, uint16_t)) {
+	OPERAND16 rm = modrm_get_op16(cpu);
+	uint16_t reg = reg16_read(cpu, cpu->modrm.reg);
 	uint16_t tmp = op16_read(cpu, rm);
 	if (D) {
-		op(cpu, reg, tmp);
+		op(cpu, &reg, tmp);
+		reg16_write(cpu, cpu->modrm.reg, reg);
 	}
 	else {
-		op(cpu, &tmp, *reg);
+		op(cpu, &tmp, reg);
 		op16_write(cpu, rm, tmp);
 	}
 }
 // Resolve bit16 ModR/M + reg with D bit, then execute a binary op. no writeback
 // The op must be of the form: void op(I8086*, uint16_t, uint16_t);
-static inline void exec_bin_op16_ro(I8086* cpu, void (*op)(I8086*, uint16_t, uint16_t)) {
-	op16_t rm = modrm_get_op16(cpu);
-	uint16_t* reg = GET_REG16(cpu->modrm.reg);
+static void exec_bin_op16_ro(I8086* cpu, void (*op)(I8086*, uint16_t, uint16_t)) {
+	OPERAND16 rm = modrm_get_op16(cpu);
+	uint16_t reg = reg16_read(cpu, cpu->modrm.reg);
 	uint16_t tmp = op16_read(cpu, rm);
 	if (D) {
-		op(cpu, *reg, tmp);
+		op(cpu, reg, tmp);
 	}
 	else {
-		op(cpu, tmp, *reg);
+		op(cpu, tmp, reg);
 	}
 }
 
@@ -485,7 +518,7 @@ static void add_rm_imm(I8086* cpu) {
 	if (W) {
 		if (SW == 0b01) {
 			/* reg16, disp16 - 0x81 */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint16_t imm = fetch_word(cpu);
 			alu_add16(cpu, &tmp, imm);
@@ -493,7 +526,7 @@ static void add_rm_imm(I8086* cpu) {
 		}
 		else {
 			/* reg16, disp8 - 0x83 is 8bit sign extended to 16bit */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint8_t imm = fetch_byte(cpu);
 			uint16_t se = sign_extend8_16(imm);
@@ -503,7 +536,7 @@ static void add_rm_imm(I8086* cpu) {
 	}
 	else {
 		/* reg8, disp8 - 0x80, 0x82 */
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		uint8_t imm = fetch_byte(cpu);
 		alu_add8(cpu, &tmp, imm);
@@ -542,7 +575,7 @@ static void or_rm_imm(I8086* cpu) {
 	if (W) {
 		if (SW == 0b01) {
 			/* reg16, disp16 - 0x81 */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint16_t imm = fetch_word(cpu);
 			alu_or16(cpu, &tmp, imm);
@@ -550,7 +583,7 @@ static void or_rm_imm(I8086* cpu) {
 		}
 		else {
 			/* reg16, disp8 - 0x83 is 8bit sign extended to 16bit */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint8_t imm = fetch_byte(cpu);
 			uint16_t se = sign_extend8_16(imm);
@@ -560,7 +593,7 @@ static void or_rm_imm(I8086* cpu) {
 	}
 	else {
 		/* reg8, disp8 - 0x80, 0x82 */
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		uint8_t imm = fetch_byte(cpu);
 		alu_or8(cpu, &tmp, imm);
@@ -599,7 +632,7 @@ static void adc_rm_imm(I8086* cpu) {
 	if (W) {
 		if (SW == 0b01) {
 			/* reg16, disp16 - 0x81 */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint16_t imm = fetch_word(cpu);
 			alu_adc16(cpu, &tmp, imm);
@@ -607,7 +640,7 @@ static void adc_rm_imm(I8086* cpu) {
 		}
 		else {
 			/* reg16, disp8 - 0x83 is 8bit sign extended to 16bit */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint8_t imm = fetch_byte(cpu);
 			uint16_t se = sign_extend8_16(imm);
@@ -617,7 +650,7 @@ static void adc_rm_imm(I8086* cpu) {
 	}
 	else {
 		/* reg8, disp8 - 0x80, 0x82 */
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		uint8_t imm = fetch_byte(cpu);
 		alu_adc8(cpu, &tmp, imm);
@@ -656,7 +689,7 @@ static void sbb_rm_imm(I8086* cpu) {
 	if (W) {
 		if (SW == 0b01) {
 			/* reg16, disp16 - 0x81 */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint16_t imm = fetch_word(cpu);
 			alu_sbb16(cpu, &tmp, imm);
@@ -664,7 +697,7 @@ static void sbb_rm_imm(I8086* cpu) {
 		}
 		else {
 			/* reg16, disp8 - 0x83 is 8bit sign extended to 16bit */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint8_t imm = fetch_byte(cpu);
 			uint16_t se = sign_extend8_16(imm);
@@ -674,7 +707,7 @@ static void sbb_rm_imm(I8086* cpu) {
 	}
 	else {
 		/* reg8, disp8 - 0x80, 0x82 */
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		uint8_t imm = fetch_byte(cpu);
 		alu_sbb8(cpu, &tmp, imm);
@@ -713,7 +746,7 @@ static void and_rm_imm(I8086* cpu) {
 	if (W) {
 		if (SW == 0b01) {
 			/* reg16, disp16 - 0x81 */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint16_t imm = fetch_word(cpu);
 			alu_and16(cpu, &tmp, imm);
@@ -721,7 +754,7 @@ static void and_rm_imm(I8086* cpu) {
 		}
 		else {
 			/* reg16, disp8 - 0x83 is 8bit sign extended to 16bit */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint8_t imm = fetch_byte(cpu);
 			uint16_t se = sign_extend8_16(imm);
@@ -731,7 +764,7 @@ static void and_rm_imm(I8086* cpu) {
 	}
 	else {
 		/* reg8, disp8 - 0x80, 0x82 */
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		uint8_t imm = fetch_byte(cpu);
 		alu_and8(cpu, &tmp, imm);
@@ -770,7 +803,7 @@ static void sub_rm_imm(I8086* cpu) {
 	if (W) {
 		if (SW == 0b01) {
 			/* reg16, disp16 - 0x81 */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint16_t imm = fetch_word(cpu);
 			alu_sub16(cpu, &tmp, imm);
@@ -778,7 +811,7 @@ static void sub_rm_imm(I8086* cpu) {
 		}
 		else {
 			/* reg16, disp8 - 0x83 is 8bit sign extended to 16bit */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint8_t imm = fetch_byte(cpu);
 			uint16_t se = sign_extend8_16(imm);
@@ -788,7 +821,7 @@ static void sub_rm_imm(I8086* cpu) {
 	}
 	else {
 		/* reg8, disp8 - 0x80, 0x82 */
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		uint8_t imm = fetch_byte(cpu);
 		alu_sub8(cpu, &tmp, imm);
@@ -827,7 +860,7 @@ static void xor_rm_imm(I8086* cpu) {
 	if (W) {
 		if (SW == 0b01) {
 			/* reg16, disp16 - 0x81 */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint16_t imm = fetch_word(cpu);
 			alu_xor16(cpu, &tmp, imm);
@@ -835,7 +868,7 @@ static void xor_rm_imm(I8086* cpu) {
 		}
 		else {
 			/* reg16, disp8 - 0x83 is 8bit sign extended to 16bit */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint8_t imm = fetch_byte(cpu);
 			uint16_t se = sign_extend8_16(imm);
@@ -845,7 +878,7 @@ static void xor_rm_imm(I8086* cpu) {
 	} 
 	else {
 		/* reg8, disp8 - 0x80, 0x82 */
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		uint8_t imm = fetch_byte(cpu);
 		alu_xor8(cpu, &tmp, imm);
@@ -884,14 +917,14 @@ static void cmp_rm_imm(I8086* cpu) {
 	if (W) {
 		if (SW == 0b01) {
 			/* reg16, disp16 - 0x81 */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint16_t imm = fetch_word(cpu);
 			alu_cmp16(cpu, tmp, imm);
 		}
 		else {
 			/* reg16, disp8 - 0x83 is 8bit sign extended to 16bit */
-			op16_t rm = modrm_get_op16(cpu);
+			OPERAND16 rm = modrm_get_op16(cpu);
 			uint16_t tmp = op16_read(cpu, rm);
 			uint8_t imm = fetch_byte(cpu);
 			uint16_t se = sign_extend8_16(imm);
@@ -900,7 +933,7 @@ static void cmp_rm_imm(I8086* cpu) {
 	}
 	else {
 		/* reg8, disp8 - 0x80, 0x82 */
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		uint8_t imm = fetch_byte(cpu);
 		alu_cmp8(cpu, tmp, imm);
@@ -936,13 +969,13 @@ static void cmp_accum_imm(I8086* cpu) {
 static void test_rm_imm(I8086* cpu) {
 	/* test r/m, imm (F6/F7, R/M reg = b000) b1111011W */
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		uint16_t imm = fetch_word(cpu);
 		alu_test16(cpu, tmp, imm);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		uint8_t imm = fetch_byte(cpu);
 		alu_test8(cpu, tmp, imm);
@@ -1055,7 +1088,6 @@ static void pop_reg(I8086* cpu) {
 	uint16_t tmp = read_word(cpu, SS, SP);
 	SP += 2;
 	cpu->registers[cpu->opcode & 7].r16 = tmp;
-
 	TRANSFERS(1);
 	CYCLES(8);
 }
@@ -1066,21 +1098,13 @@ static void push_rm(I8086* cpu) {
 		This is so when pushing SP the NEW SP is pushed. */
 
 	if (W) {
-		SP -= 2;
-		op16_t op16 = modrm_get_op16(cpu);
-		uint16_t tmp = op16_read(cpu, op16);
-		write_word(cpu, SS, SP, tmp);
+		OPERAND16 op16 = modrm_get_op16(cpu);
+		push_op16(cpu, op16);
 	}
 	else {
-		/* Undocumented instruction; PUSH byte R/M.
-			This is based on the JSON 8086 v2 undefined opcode tests. 
-			i can put any byte in the hi byte and the tests still pass
-			so i'm just assuming FF. SP is decremented by 2 so something
-			def gets write there. Hmm. */
-		SP -= 2;
-		op8_t op8 = modrm_get_op8(cpu);
-		uint16_t tmp = 0xFF00 | op8_read(cpu, op8);
-		write_word(cpu, SS, SP, tmp);
+		/* Undocumented instruction; PUSH byte R/M. */
+		OPERAND8 op8 = modrm_get_op8(cpu);
+		push_op8(cpu, op8);
 	}
 	TRANSFERS(2);
 	CYCLES(16);
@@ -1092,10 +1116,8 @@ static void pop_rm(I8086* cpu) {
 		This is so when popping SP the OLD SP is popped. */
 
 	fetch_modrm(cpu);
-	uint16_t tmp = read_word(cpu, SS, SP);
-	SP += 2;
-	op16_t op16 = modrm_get_op16(cpu);
-	op16_write(cpu, op16, tmp);
+	OPERAND16 op16 = modrm_get_op16(cpu);
+	pop_op16(cpu, op16);
 
 	TRANSFERS(2);
 	CYCLES(17);
@@ -1124,27 +1146,26 @@ static void nop(I8086* cpu) {
 static void xchg_accum_reg(I8086* cpu) {
 	/* xchg AX, reg16 (91 - 97) b10010REG */	
 	uint16_t tmp = AX;
-	uint16_t* reg = GET_REG16(cpu->opcode);
-	AX = *reg;
-	*reg = tmp;
+	AX = reg16_read(cpu, cpu->opcode);
+	reg16_write(cpu, cpu->opcode, tmp);
 	CYCLES(3);
 }
 static void xchg_rm_reg(I8086* cpu) {
 	/* xchg R/M, reg16 (86/87) b1000011W */
 	fetch_modrm(cpu);
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
-		uint16_t* reg = GET_REG16(cpu->modrm.reg);
+		OPERAND16 rm = modrm_get_op16(cpu);
+		uint16_t reg = reg16_read(cpu, cpu->modrm.reg);
 		uint16_t tmp = op16_read(cpu, rm);
-		op16_write(cpu, rm, *reg);
-		*reg = tmp;
+		op16_write(cpu, rm, reg);
+		reg16_write(cpu, cpu->modrm.reg, tmp);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
-		uint8_t* reg = GET_REG8(cpu->modrm.reg);
+		OPERAND8 rm = modrm_get_op8(cpu);
+		uint8_t reg = reg8_read(cpu, cpu->modrm.reg);
 		uint8_t tmp = op8_read(cpu, rm);
-		op8_write(cpu, rm, *reg);
-		*reg = tmp;
+		op8_write(cpu, rm, reg);
+		reg8_write(cpu, cpu->modrm.reg, tmp);
 	}
 	TRANSFERS_RM(0, 2);
 	CYCLES_RM(4, 17);
@@ -1173,9 +1194,9 @@ static void cwd(I8086* cpu) {
 
 static void wait(I8086* cpu) {
 	/* wait (9B) b10011011 */
-	if (!cpu->pins.test) {
+	//if (!cpu->test) {
 		//IP -= cpu->instruction_len;
-	}
+	//}
 	CYCLES(4);
 }
 
@@ -1234,20 +1255,22 @@ static void std(I8086* cpu) {
 
 static void inc_reg(I8086* cpu) {
 	/* Inc reg16 (40-47) b01000REG */
-	alu_inc16(cpu, GET_REG16(cpu->opcode));
+	uint16_t tmp = reg16_read(cpu, cpu->opcode);
+	alu_inc16(cpu, &tmp);
+	reg16_write(cpu, cpu->opcode, tmp);
 	CYCLES(2);
 }
 static void inc_rm(I8086* cpu) {
 	/* Inc R/M (FE/FF, R/M reg = 000) b1111111W */
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_inc16(cpu, &tmp);
 		op16_write(cpu, rm, tmp);
 		CYCLES_RM(2, 15);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_inc8(cpu, &tmp);
 		op8_write(cpu, rm, tmp);
@@ -1258,20 +1281,22 @@ static void inc_rm(I8086* cpu) {
 
 static void dec_reg(I8086* cpu) {
 	/* Dec reg16 (48-4F) b01001REG */
-	alu_dec16(cpu, GET_REG16(cpu->opcode));
+	uint16_t tmp = reg16_read(cpu, cpu->opcode);
+	alu_dec16(cpu, &tmp);
+	reg16_write(cpu, cpu->opcode, tmp);
 	CYCLES(2);
 }
 static void dec_rm(I8086* cpu) {
 	/* Dec R/M (FE/FF, R/M reg = 001) b1111111W */
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_dec16(cpu, &tmp);
 		op16_write(cpu, rm, tmp);
 		CYCLES_RM(2, 15);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_dec8(cpu, &tmp);
 		op8_write(cpu, rm, tmp);
@@ -1288,13 +1313,13 @@ static void rol(I8086* cpu) {
 	}
 
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_rol16(cpu, &tmp, count);
 		op16_write(cpu, rm, tmp);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_rol8(cpu, &tmp, count);
 		op8_write(cpu, rm, tmp);
@@ -1317,13 +1342,13 @@ static void ror(I8086* cpu) {
 	}
 
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_ror16(cpu, &tmp, count);
 		op16_write(cpu, rm, tmp);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_ror8(cpu, &tmp, count);
 		op8_write(cpu, rm, tmp);
@@ -1346,13 +1371,13 @@ static void rcl(I8086* cpu) {
 	}
 
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_rcl16(cpu, &tmp, count);
 		op16_write(cpu, rm, tmp);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_rcl8(cpu, &tmp, count);
 		op8_write(cpu, rm, tmp);
@@ -1375,13 +1400,13 @@ static void rcr(I8086* cpu) {
 	}
 
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_rcr16(cpu, &tmp, count);
 		op16_write(cpu, rm, tmp);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_rcr8(cpu, &tmp, count);
 		op8_write(cpu, rm, tmp);
@@ -1404,13 +1429,13 @@ static void shl(I8086* cpu) {
 	}
 
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_shl16(cpu, &tmp, count);
 		op16_write(cpu, rm, tmp);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_shl8(cpu, &tmp, count);
 		op8_write(cpu, rm, tmp);
@@ -1433,13 +1458,13 @@ static void shr(I8086* cpu) {
 	}
 
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_shr16(cpu, &tmp, count);
 		op16_write(cpu, rm, tmp);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_shr8(cpu, &tmp, count);
 		op8_write(cpu, rm, tmp);
@@ -1462,13 +1487,13 @@ static void sar(I8086* cpu) {
 	}
 
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_sar16(cpu, &tmp, count);
 		op16_write(cpu, rm, tmp);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_sar8(cpu, &tmp, count);
 		op8_write(cpu, rm, tmp);
@@ -1492,13 +1517,13 @@ static void setmo(I8086* cpu) {
 	}
 
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_setmo16(cpu, &tmp, count);
 		op16_write(cpu, rm, tmp);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_setmo8(cpu, &tmp, count);
 		op8_write(cpu, rm, tmp);
@@ -1610,7 +1635,7 @@ static void jmp_intra_indirect(I8086* cpu) {
 	/* Jump near indirect (FE/FF, R/M reg = 100) b1111111W */
 
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		IP = op16_read(cpu, rm);
 	}
 	else {
@@ -1618,13 +1643,13 @@ static void jmp_intra_indirect(I8086* cpu) {
 			This is based on the JSON 8086 v2 undefined opcode tests.
 			02.09.2025 - tommojphillips */
 
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		if (cpu->modrm.mod == 0b11) {
 			/* For a 8bit register, the pair is actually reversed;
 				Toggle bit3 in the rm field of the modrm byte to
 				access the other 8bit register in the pair. */
 			cpu->modrm.rm ^= 0x4;
-			op8_t rm2 = modrm_get_op8(cpu);
+			OPERAND8 rm2 = modrm_get_op8(cpu);
 			IP = op8_read(cpu, rm);
 			IP |= ((uint16_t)op8_read(cpu, rm2) << 8);
 		}
@@ -1637,25 +1662,17 @@ static void jmp_intra_indirect(I8086* cpu) {
 	TRANSFERS_RM(0, 1);
 	CYCLES_RM(11, 18);
 }
-static void jmp_inter_indirect(I8086* cpu) {
+static int jmp_inter_indirect(I8086* cpu) {
 	/* Jump far indirect (FE/FF, R/M reg = 101) b1111111W */
 
 	if (W) {
 		if (cpu->modrm.mod == 0b11) {
-			/* Undocumented instruction; JMP far word REG16.
-				This is based on the JSON 8086 v2 undefined opcode tests.
-				02.09.2025 - tommojphillips */
-
-			/* IP is set to OLD_IP - 4. */
-			IP = IP - cpu->instruction_len - 4;
-
-			/* CS is read respecting segment override [SR + 4].
-				defaults to DS. */
-			if (cpu->segment_prefix == 0xFF) {
-				cpu->segment_prefix = SEG_DS;
-			}
-			uint16_t segment = modrm_get_segment(cpu);
-			CS = read_word(cpu, segment, 4);
+			/* Undocumented instruction; JMP far word R/M.
+			This instruction cannot be traditionally emulated when
+			register operands are specified. Due to	assumptions
+			made by the microcode, this routine	uses the internal
+			register tmpb which is stale/uninitialized. */
+			return I8086_DECODE_UNDEFINED;
 		}
 		else {
 			uint16_t segment = modrm_get_segment(cpu);
@@ -1665,18 +1682,17 @@ static void jmp_inter_indirect(I8086* cpu) {
 		}
 	}
 	else {
-		/* Undocumented instruction; JMP far byte R/M.
-			This is based on the JSON 8086 v2 undefined opcode tests.
-			02.09.2025 - tommojphillips */
-
 		if (cpu->modrm.mod == 0b11) {
-			/* IP is set to OLD_IP - 4. */
-			IP = IP - cpu->instruction_len - 4;
-
-			/* CS is set to [DS + 4]. Set the hi byte to FF. */
-			CS = 0xFF00 | read_byte(cpu, cpu->segments[SEG_DS], 4);
+			/* Undocumented instruction; JMP far byte R/M.
+			This instruction cannot be traditionally emulated when
+			register operands are specified. Due to	assumptions
+			made by the microcode, this routine	uses the internal
+			register tmpb which is stale/uninitialized. */
+			return I8086_DECODE_UNDEFINED;
 		}
 		else {
+			/* Undocumented instruction; JMP far byte R/M. */
+
 			/* Get Mod R/M offset; fetch displacement (if applicable); incrementing IP. */
 			uint16_t offset = modrm_get_offset(cpu);
 
@@ -1692,6 +1708,7 @@ static void jmp_inter_indirect(I8086* cpu) {
 	}
 	TRANSFERS(2);
 	CYCLES(24);
+	return I8086_DECODE_OK;
 }
 
 static void call_intra_direct(I8086* cpu) {
@@ -1729,30 +1746,23 @@ static void call_inter_direct(I8086* cpu) {
 static void call_intra_indirect(I8086* cpu) {
 	/* Call near R/M (FE/FF, R/M reg = 010) b1111111W */
 
-	/* NOTE: We need to read ip prior to pushing it.
-		This is so if SP = [R/M],
-		it doesn't write over it when pushing ip.
-		This is based on the JSON 8088 tests. */
-
 	uint16_t ip = 0;
 
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		ip = op16_read(cpu, rm);
 		push_word(cpu, IP);
 	}
 	else {
-		/* Undocumented instruction; CALL near byte R/M.
-			This is based on the JSON 8086 v2 undefined opcode tests.
-			02.09.2025 - tommojphillips */
+		/* Undocumented instruction; CALL near byte R/M. */
 
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		if (cpu->modrm.mod == 0b11) {
 			/* For a 8bit register, the pair is actually reversed;
 				Toggle bit3 in the rm field of the modrm byte to
 				access the other 8bit register in the pair. */
 			cpu->modrm.rm ^= 0x4;
-			op8_t rm2 = modrm_get_op8(cpu);
+			OPERAND8 rm2 = modrm_get_op8(cpu);
 			ip = op8_read(cpu, rm);
 			ip |= ((uint16_t)op8_read(cpu, rm2) << 8);
 		}
@@ -1761,45 +1771,28 @@ static void call_intra_indirect(I8086* cpu) {
 			ip = 0xFF00 | op8_read(cpu, rm);
 		}
 
-		/* Only the lo byte of IP are pushed to the stack. 
-			i can put any byte in the hi byte and the tests still pass
-			so i'm just assuming FF. SP is decremented by 2 so something
-			def gets write there. Hmm. */
-		push_word(cpu, 0xFF00 | (IP & 0xFF));
+		/* Only the lo byte of IP is pushed to the stack. */
+		push_byte(cpu, IP & 0xFF);
 	}
 	IP = ip;
 
 	TRANSFERS_RM(1, 2);
 	CYCLES_RM(16, 21);
 }
-static void call_inter_indirect(I8086* cpu) {
+static int call_inter_indirect(I8086* cpu) {
 	/* Call far R/M (FE/FF, R/M reg = 011) b1111111W */
-
-	/* NOTE: We need to read ip,cs prior to pushing them.
-		This is so if SP = [R/M],
-		it doesn't write over it when pushing ip,cs.
-		This is based on the JSON 8088 tests. */
-	
+		
 	uint16_t ip = 0;
 	uint16_t cs = 0;
 
 	if (W) {
-
 		if (cpu->modrm.mod == 0b11) {
-			/* Undocumented instruction; CALL far word REG16.
-				This is based on the JSON 8086 v2 undefined opcode tests.
-				02.09.2025 - tommojphillips */
-
-			/* IP is set to OLD_IP - 4. */
-			ip = IP - cpu->instruction_len - 4;
-
-			/* CS is read respecting segment override [SR + 4].
-				defaults to DS. */
-			if (cpu->segment_prefix == 0xFF) {
-				cpu->segment_prefix = SEG_DS;
-			}
-			uint16_t segment = modrm_get_segment(cpu);
-			cs = read_word(cpu, segment, 4);
+			/* Undocumented instruction; CALL far word R/M.
+			This instruction cannot be traditionally emulated when
+			register operands are specified. Due to	assumptions
+			made by the microcode, this routine	uses the internal
+			register tmpb which is stale/uninitialized. */
+			return I8086_DECODE_UNDEFINED;
 		}
 		else {
 			uint16_t segment = modrm_get_segment(cpu);
@@ -1811,19 +1804,18 @@ static void call_inter_indirect(I8086* cpu) {
 		push_word(cpu, CS);
 		push_word(cpu, IP);
 	}
-	else {
-		/* Undocumented instruction; CALL far byte R/M.
-			This is based on the JSON 8086 v2 undefined opcode tests.
-			02.09.2025 - tommojphillips */
-		
+	else {		
 		if (cpu->modrm.mod == 0b11) {
-			/* IP is set to OLD_IP - 4. */
-			ip = IP - cpu->instruction_len - 4;
-
-			/* CS is set to [DS + 4]. Set the hi byte to FF. */
-			cs = 0xFF00 | read_byte(cpu, cpu->segments[SEG_DS], 4);
+			/* Undocumented instruction; CALL far byte R/M.
+			This instruction cannot be traditionally emulated when
+			register operands are specified. Due to	assumptions
+			made by the microcode, this routine	uses the internal
+			register tmpb which is stale/uninitialized. */
+			return I8086_DECODE_UNDEFINED;
 		}
 		else {
+			/* Undocumented instruction; CALL far byte R/M. */
+
 			/* Get Mod R/M offset; fetch displacement (if applicable); incrementing IP. */
 			uint16_t offset = modrm_get_offset(cpu);
 
@@ -1837,18 +1829,16 @@ static void call_inter_indirect(I8086* cpu) {
 			cs = 0xFF00 | read_byte(cpu, segment, offset);
 		}
 
-		/* Only the lo byte of CS and IP are pushed to the stack. 
-			i can put any byte in the hi byte and the tests still pass
-			so i'm just assuming FF. SP is decremented by 2 so something
-			def gets write there. Hmm. */
-		push_word(cpu, 0xFF00 | (CS & 0xFF));
-		push_word(cpu, 0xFF00 | (IP & 0xFF));
+		/* Only the lo byte of CS and IP are pushed to the stack. */
+		push_byte(cpu, CS & 0xFF);
+		push_byte(cpu, IP & 0xFF);
 	}
 
 	IP = ip;
 	CS = cs;
 	TRANSFERS(4);
 	CYCLES(37);
+	return I8086_DECODE_OK;
 }
 
 static void ret_intra_add_imm(I8086* cpu) {
@@ -1886,12 +1876,12 @@ static void mov_rm_imm(I8086* cpu) {
 	/* mov r/m, imm (C6/C7) b1100011W */
 	fetch_modrm(cpu);
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t imm = fetch_word(cpu);
 		op16_write(cpu, rm, imm);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t imm = fetch_byte(cpu);
 		op8_write(cpu, rm, imm);
 	}
@@ -1902,13 +1892,11 @@ static void mov_reg_imm(I8086* cpu) {
 	/* mov r/m, reg (B0-BF) b1011WREG */
 	if (WREG) {
 		uint16_t imm = fetch_word(cpu);
-		uint16_t* reg = GET_REG16(cpu->opcode);
-		*reg = imm;
+		reg16_write(cpu, cpu->opcode, imm);
 	}
 	else {
 		uint8_t imm = fetch_byte(cpu);
-		uint8_t* reg = GET_REG8(cpu->opcode);
-		*reg = imm;
+		reg8_write(cpu, cpu->opcode, imm);
 	}
 	CYCLES(4);
 }
@@ -1916,25 +1904,25 @@ static void mov_rm_reg(I8086* cpu) {
 	/* mov r/m, reg (88/89/8A/8B) b100010DW */
 	fetch_modrm(cpu);
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
-		uint16_t* reg = GET_REG16(cpu->modrm.reg);
-
+		OPERAND16 rm = modrm_get_op16(cpu);
 		if (D) {
-			*reg = op16_read(cpu, rm);
+			uint16_t tmp = op16_read(cpu, rm);
+			reg16_write(cpu, cpu->modrm.reg, tmp);
 		}
 		else {
-			op16_write(cpu, rm, *reg);
+			uint16_t tmp = reg16_read(cpu, cpu->modrm.reg);
+			op16_write(cpu, rm, tmp);
 		}
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
-		uint8_t* reg = GET_REG8(cpu->modrm.reg);
-
+		OPERAND8 rm = modrm_get_op8(cpu);
 		if (D) {
-			*reg = op8_read(cpu, rm);
+			uint8_t tmp = op8_read(cpu, rm);
+			reg8_write(cpu, cpu->modrm.reg, tmp);
 		}
 		else {
-			op8_write(cpu, rm, *reg);
+			uint8_t tmp = reg8_read(cpu, cpu->modrm.reg);
+			op8_write(cpu, rm, tmp);
 		}
 	}
 	TRANSFERS_RM(0, 1);
@@ -1944,25 +1932,25 @@ static void mov_accum_mem(I8086* cpu) {
 	/* mov AL/AX, [mem] (A0/A1/A2/A3) b101000DW */
 	uint16_t addr = fetch_word(cpu);
 	if (W) {
-		op16_t mem = mem_get_op16(SEG_DEFAULT_OR_OVERRIDE(SEG_DS), addr);
-		uint16_t* reg = GET_REG16(REG_AX);
-
+		OPERAND16 mem = mem_get_op16(SEG_DEFAULT_OR_OVERRIDE(SEG_DS), addr);
 		if (D) {
-			op16_write(cpu, mem, *reg);
+			uint16_t tmp = reg16_read(cpu, REG_AX);
+			op16_write(cpu, mem, tmp);
 		}
 		else {
-			*reg = op16_read(cpu, mem);
+			uint16_t tmp = op16_read(cpu, mem);
+			reg16_write(cpu, REG_AX, tmp);
 		}
 	}
 	else {
-		op8_t mem = mem_get_op8(SEG_DEFAULT_OR_OVERRIDE(SEG_DS), addr);
-		uint8_t* reg = GET_REG8(REG_AL);
-
+		OPERAND8 mem = mem_get_op8(SEG_DEFAULT_OR_OVERRIDE(SEG_DS), addr);
 		if (D) {
-			op8_write(cpu, mem, *reg);
+			uint8_t tmp = reg8_read(cpu, REG_AL);
+			op8_write(cpu, mem, tmp);
 		}
 		else {
-			*reg = op8_read(cpu, mem);
+			uint8_t tmp = op8_read(cpu, mem);
+			reg8_write(cpu, REG_AL, tmp);
 		}
 	}
 	TRANSFERS(1);
@@ -1971,7 +1959,7 @@ static void mov_accum_mem(I8086* cpu) {
 static void mov_seg(I8086* cpu) {
 	/* mov r/m, seg (8C/8E) b100011D0 */
 	fetch_modrm(cpu);		
-	op16_t rm = modrm_get_op16(cpu);
+	OPERAND16 rm = modrm_get_op16(cpu);
 	uint16_t* seg = GET_SEG(cpu->modrm.reg);
 
 	if (D) {
@@ -1996,21 +1984,20 @@ static void mov_seg(I8086* cpu) {
 static void lea(I8086* cpu) {
 	/* lea reg16, [r/m] (8D) b10001101 */
 	fetch_modrm(cpu);
-	uint16_t* reg = GET_REG16(cpu->modrm.reg);
 	uint16_t addr = modrm_get_offset(cpu);
-	*reg = addr;
+	reg16_write(cpu, cpu->modrm.reg, addr);
 	CYCLES(2);
 }
 
 static void not(I8086* cpu) {
 	/* not reg (F6/F7, R/M reg = b010) b1111011W */
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		op16_write(cpu, rm, ~tmp);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		op8_write(cpu, rm, ~tmp);
 	}
@@ -2028,13 +2015,13 @@ static void neg(I8086* cpu) {
 	 operand is zero, in which case it is cleared */
 
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_neg16(cpu, &tmp);
 		op16_write(cpu, rm, tmp);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_neg8(cpu, &tmp);
 		op8_write(cpu, rm, tmp);
@@ -2045,14 +2032,14 @@ static void neg(I8086* cpu) {
 static void mul_rm(I8086* cpu) {
 	/* mul r/m (F6/F7, R/M reg = b100) b1111011W */
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_mul16(cpu, AX, tmp, &AX, &DX);
 		TRANSFERS_RM(0, 1);
 		CYCLES_RM(118, 224);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_mul8(cpu, AL, tmp, &AL, &AH);
 		TRANSFERS_RM(0, 1);
@@ -2062,39 +2049,32 @@ static void mul_rm(I8086* cpu) {
 static void imul_rm(I8086* cpu) {
 	/* imul r/m (F6/F7, R/M reg = b101) b1111011W */
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_imul16(cpu, AX, tmp, &AX, &DX);
 		TRANSFERS_RM(0, 1);
 		CYCLES_RM(128, 134);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_imul8(cpu, AL, tmp, &AL, &AH);
 		TRANSFERS_RM(0, 1);
 		CYCLES_RM(80, 86);
 	}
 
-	/* undocumented* 
-		The multiply microcode reuses the F1 flag to track the
-		sign of the input values, toggling F1 for each negative value.
-		If F1 is set, the product at the end is negated */
-	if (F1) {
-		AX = ~AX;
-	}
 }
 static void div_rm(I8086* cpu) {
 	/* div r/m (F6/F7, R/M reg = b110) b1111011W */
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_div16(cpu, AX, DX, tmp, &AX, &DX);
 		TRANSFERS_RM(0, 1);
 		CYCLES_RM(144, 150);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_div8(cpu, AL, AH, tmp, &AL, &AH);
 		TRANSFERS_RM(0, 1);
@@ -2104,27 +2084,20 @@ static void div_rm(I8086* cpu) {
 static void idiv_rm(I8086* cpu) {
 	/* idiv r/m (F6/F7, R/M reg = b111) b1111011W */
 	if (W) {
-		op16_t rm = modrm_get_op16(cpu);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		uint16_t tmp = op16_read(cpu, rm);
 		alu_idiv16(cpu, AX, DX, tmp, &AX, &DX);
 		TRANSFERS_RM(0, 1);
 		CYCLES_RM(165, 171);
 	}
 	else {
-		op8_t rm = modrm_get_op8(cpu);
+		OPERAND8 rm = modrm_get_op8(cpu);
 		uint8_t tmp = op8_read(cpu, rm);
 		alu_idiv8(cpu, AL, AH, tmp, &AL, &AH);
 		TRANSFERS_RM(0, 1);
 		CYCLES_RM(101, 107);
 	}
 
-	/* undocumented* 
-		The divide mircocode reuses the F1 flag to track the
-		sign of the input values, toggling F1 for each negative value.
-		If F1 is set, the quotient at the end is negated */
-	if (F1) {
-		AX = ~AX;
-	}
 }
 
 static int movs(I8086* cpu) {
@@ -2319,10 +2292,10 @@ static int scas(I8086* cpu) {
 static void les(I8086* cpu) {
 	/* les (C4) b11000100 */
 	fetch_modrm(cpu);
-	uint16_t* reg = GET_REG16(cpu->modrm.reg);
 	uint16_t segment = modrm_get_segment(cpu);
 	uint16_t offset = modrm_get_offset(cpu);
-	*reg = read_word(cpu, segment, offset);
+	uint16_t tmp = read_word(cpu, segment, offset);
+	reg16_write(cpu, cpu->modrm.reg, tmp);
 	ES = read_word(cpu, segment, offset + 2);
 	TRANSFERS(2);
 	CYCLES(16);
@@ -2330,10 +2303,10 @@ static void les(I8086* cpu) {
 static void lds(I8086* cpu) {
 	/* lds (C5) b11000101 */
 	fetch_modrm(cpu);
-	uint16_t* reg = GET_REG16(cpu->modrm.reg);
 	uint16_t segment = modrm_get_segment(cpu);
 	uint16_t offset = modrm_get_offset(cpu);
-	*reg = read_word(cpu, segment, offset);
+	uint16_t tmp = read_word(cpu, segment, offset);
+	reg16_write(cpu, cpu->modrm.reg, tmp);
 	DS = read_word(cpu, segment, offset + 2);
 	TRANSFERS(2);
 	CYCLES(16);
@@ -2352,8 +2325,8 @@ static void esc(I8086* cpu) {
 	fetch_modrm(cpu);
 	if (cpu->modrm.mod != 0b11) {
 		uint8_t esc_opcode = ((cpu->opcode & 7) << 3) | cpu->modrm.reg;
-		uint16_t* reg = GET_REG16(cpu->opcode);
-		op16_t rm = modrm_get_op16(cpu);
+		uint16_t reg = reg16_read(cpu, cpu->opcode);
+		OPERAND16 rm = modrm_get_op16(cpu);
 		(void)esc_opcode;
 		(void)reg;
 		(void)rm;
@@ -2501,7 +2474,7 @@ static int segment_override(I8086* cpu) {
 	return I8086_DECODE_REQ_CYCLE;
 }
 static int lock(I8086* cpu) {
-	/* lock the bus (F0) b11110000 */
+	/* lock the bus (F0/F1) b11110000 */
 	cpu->opcode = fetch_byte(cpu);
 	CYCLES(2);
 	return I8086_DECODE_REQ_CYCLE;
@@ -2607,7 +2580,7 @@ static void i8086_decode_opcode_f6(I8086* cpu) {
 			break;
 	}
 }
-static void i8086_decode_opcode_fe(I8086* cpu) {
+static int i8086_decode_opcode_fe(I8086* cpu) {
 	/* FE/FF b1111111W (Group 2) */
 	fetch_modrm(cpu);
 	switch (cpu->modrm.reg) {
@@ -2621,14 +2594,12 @@ static void i8086_decode_opcode_fe(I8086* cpu) {
 			call_intra_indirect(cpu);
 			break;
 		case 0b011:
-			call_inter_indirect(cpu);
-			break;
+			return call_inter_indirect(cpu);
 		case 0b100:
 			jmp_intra_indirect(cpu);
 			break;
 		case 0b101:
-			jmp_inter_indirect(cpu);
-			break;
+			return jmp_inter_indirect(cpu);
 		case 0b110:
 			push_rm(cpu);
 			break;
@@ -2636,6 +2607,7 @@ static void i8086_decode_opcode_fe(I8086* cpu) {
 			push_rm(cpu);
 			break;
 	}
+	return I8086_DECODE_OK;
 }
 
 static int i8086_decode_opcode(I8086* cpu) {
@@ -3111,8 +3083,7 @@ static int i8086_decode_opcode(I8086* cpu) {
 			break;
 		case 0xFE:
 		case 0xFF:
-			i8086_decode_opcode_fe(cpu);
-			break;
+			return i8086_decode_opcode_fe(cpu);
 	}
 	return I8086_DECODE_OK;
 }
@@ -3161,11 +3132,12 @@ void i8086_reset(I8086* cpu) {
 	cpu->segment_prefix = 0xFF;
 	cpu->instruction_len = 0;
 
-	cpu->pins.intr = 0;
-	cpu->pins.mode = 0;
-	cpu->pins.nmi = 0;
-	cpu->pins.test = 0;
+	cpu->intr = 0;
+	cpu->nmi = 0;
 
+	cpu->ea_offset = 0;
+	cpu->ea_segment = 0;
+	
 	cpu->tf_latch = 0;
 	cpu->int_latch = 0;
 	cpu->int_delay = 0;

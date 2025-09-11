@@ -56,7 +56,7 @@
 #define I8086_JCC_JLE 0b1110
 #define I8086_JCC_JG  0b1111
 
-#define I8086_ENABLE_INTERRUPT_HOOKS
+//#define I8086_ENABLE_INTERRUPT_HOOKS
 
 /* 20bit address */
 typedef uint32_t uint20_t;
@@ -128,9 +128,8 @@ typedef struct I8086_FUNCS {
 
 } I8086_FUNCS;
 
-typedef struct I8086 I8086;
-
 #ifdef I8086_ENABLE_INTERRUPT_HOOKS
+typedef struct I8086 I8086;
 /* I8086 Hook
  cpu: the cpu instance that invoked this hook
  return: 1 if the hook has handled the interrupt.
@@ -147,21 +146,12 @@ typedef struct {
 #define INTERNAL_FLAG_F1Z 0x01
 #define INTERNAL_FLAG_F1  0x02
 
-typedef struct I8086_PINS {
-	uint8_t nmi;  // pin17 - non-maskable interrupt
-	uint8_t intr; // pin18 - interrupt request
-	uint8_t test; // pin23 - test
-	uint8_t lock; // pin29 - lock the bus
-	uint8_t mode; // pin33 - minimum/maximum mode
-} I8086_PINS;
-
 /* I8086 CPU State */
 typedef struct I8086 {
-	uint16_t ip;                                 // instruction pointer
 	I8086_REG16 registers[I8086_REGISTER_COUNT]; // general registers
 	uint16_t segments[I8086_SEGMENT_COUNT];      // segment registers
-	I8086_PROGRAM_STATUS_WORD status;            // program status word
-	
+	I8086_PROGRAM_STATUS_WORD status;            // program status word	
+	uint16_t ip;                                 // instruction pointer
 	uint8_t opcode;                              // current opcode
 	I8086_MOD_RM modrm;                          // current mod r/m byte (if applicable)
 	uint8_t segment_prefix;                      // current segment override prefix byte (if applicable)
@@ -169,13 +159,14 @@ typedef struct I8086 {
 	uint8_t tf_latch;                            // trap latch
 	uint8_t int_latch;                           // interrupt latch
 	uint8_t int_delay;                           // interrupt delay	
+	uint8_t nmi;                                 // NMI pin
+	uint8_t intr;                                // INTR pin
 	uint8_t intr_type;                           // Hardware interrupt type. 0-255 (INTR)
-	
 	uint8_t instruction_len;
-	
+	uint16_t ea_offset;
+	uint16_t ea_segment;
 	uint64_t cycles;
 
-	I8086_PINS pins;                             // cpu pins
 	I8086_FUNCS funcs;                           // cpu memory function pointers
 
 #ifdef I8086_ENABLE_INTERRUPT_HOOKS
@@ -188,8 +179,7 @@ typedef struct I8086 {
 extern "C" {
 #endif
 
-/* Initialize the CPU. 
-	Sets all function pointers to NULL
+/* Initialize the CPU. Sets all function pointers to NULL
 	cpu: the cpu instance */
 void i8086_init(I8086* cpu);
 
@@ -202,13 +192,29 @@ void i8086_reset(I8086* cpu);
 int i8086_execute(I8086* cpu);
 
 /* request hardware interrupt
-	cpu:  the cpu to interrupt
+	cpu:  the cpu instance
 	type: the interrupt number 0-0xFF */
 void i8086_intr(I8086* cpu, uint8_t type);
 
+/* request non maskable interrupt
+	cpu:  the cpu instance */
+void i8086_nmi(I8086* cpu);
+
 #ifdef I8086_ENABLE_INTERRUPT_HOOKS
+/* setup an interrupt callback on type 
+	cpu: the cpu instance
+	cb: the interrupt callback function
+	type: the interrupt type to hook */
 void i8086_set_interrupt_cb(I8086* cpu, I8086_INT_CB cb, uint8_t type);
+
+/* remove an interrupt callback on type
+	cpu: the cpu instance
+	type: the interrupt type to unhook */
 void i8086_remove_interrupt_cb(I8086* cpu, uint8_t type);
+
+/* find an interrupt callback on type
+	cpu: the cpu instance
+	type: the interrupt type to find */
 I8086_INT_CB i8086_find_interrupt_cb(I8086* cpu, uint8_t type);
 #else
 /* HOOKS NOT ENABLED */
