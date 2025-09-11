@@ -27,6 +27,9 @@
     <ClInclude Include="..\src\sign_extend.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\i8086_muldiv.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\src\i8086.c">
@@ -39,6 +42,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\src\sign_extend.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\i8086_muldiv.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

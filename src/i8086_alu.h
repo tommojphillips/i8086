@@ -3,8 +3,12 @@
  * Intel 8086 Arithmetic Logic Unit
  */
 
-#ifndef ALU_H
-#define ALU_H
+#ifndef I8086_ALU_H
+#define I8086_ALU_H
+
+#include <stdint.h>
+
+typedef struct I8086 I8086;
 
 #ifdef __cplusplus
 extern "C" {
