@@ -1,6 +1,6 @@
 /* i8086_mnem.c
  * Thomas J. Armytage 2025 ( https://github.com/tommojphillips/ )
- * Intel 8086 Mnemonics
+ * Intel 8086 Mnemonics/Disassembler
  */
 
 #define I8086_ENABLE_MNEM
@@ -12,30 +12,15 @@
 
 #include "i8086.h"
 #include "i8086_mnem.h"
-
- //#define CONVERT_REL_TO_ABS
-#ifdef CONVERT_REL_TO_ABS
 #include "sign_extend.h"
-/* Relative offset to Absolute offset*/
-#define TO_LABEL_OFFSET(x) (IP+x)
-#endif
 
-#define CS mnem->state->segments[SEG_CS] // code segment register
+#define CS mnem->segment // code segment register
 
  /* define IP as counter */
 #define IP  (mnem->offset + mnem->counter)
 
 /* Get 20bit address SEG:ADDR */
-#define GET_ADDR(addr) (((mnem->segment << 4) + (addr)))
-
- /* Get 20bit code segment address CS:ADDR */
-#define IP_ADDR            GET_ADDR(IP)
-
-/* Fetch word at CS:IP. Inc IP by 2 */
-#define FETCH_BYTE()       fetch_byte(mnem)//cpu->state->funcs.read_mem_byte(IP_ADDR); cpu->counter += 1
-
-/* Fetch word at CS:IP. Inc IP by 2 */
-#define FETCH_WORD()       fetch_word(mnem)//cpu->state->funcs.read_mem_word(IP_ADDR); cpu->counter += 2
+#define PHYS_ADDRESS(seg, offset) ((((uint20_t)seg << 4) + ((offset) & 0xFFFF)) & 0xFFFFF)
 
 /* Get 8bit register mnemonic */
 #define GET_REG8(reg)      reg8_mnem[reg & 7]
@@ -64,6 +49,12 @@
 // jump condition
 #define CCCC (mnem->opcode & 0x0F)
 
+/* Internal flag F1. Signals that a rep prefix is in use for this decode cycle */
+#define F1  (mnem->internal_flags & INTERNAL_FLAG_F1)
+
+/* Internal flag F1Z. Signals which rep (repz/repnz) is in use for this decode cycle */
+#define F1Z (mnem->internal_flags & INTERNAL_FLAG_F1Z)
+
 #define MNEM0_F(mem, x) sprintf(mem+strlen(mem), x)
 #define MNEM0(x)        MNEM0_F(mnem->str, x)
 
@@ -80,9 +71,6 @@ static const char* reg16_mnem[] = {
 static const char* seg_mnem[] = {
 	"es", "cs", "ss", "ds"
 };
-
-/* Get 20bit address SEG:ADDR */
-#define PHYS_ADDRESS(seg, offset) ((((uint20_t)seg << 4) + ((offset) & 0xFFFF)) & 0xFFFFF)
 
 static uint8_t read_byte(I8086_MNEM* mnem, uint16_t segment, uint16_t offset) {
 	return mnem->state->funcs.read_mem_byte(PHYS_ADDRESS(segment, offset));
@@ -121,16 +109,16 @@ static void get_direction(I8086_MNEM* mnem, void** ptr1, void** ptr2) {
 static void get_base_mnem(I8086_MNEM* mnem, char* t) {
 	switch (mnem->modrm.rm) {
 		case 0b000: // base rel indexed - BX + SI
-			MNEM_F(t, "%s + %s", GET_REG16(REG_BX), GET_REG16(REG_SI));
+			MNEM_F(t, "%s+%s", GET_REG16(REG_BX), GET_REG16(REG_SI));
 			break;
 		case 0b001: // base rel indexed - BX + DI
-			MNEM_F(t, "%s + %s", GET_REG16(REG_BX), GET_REG16(REG_DI));
+			MNEM_F(t, "%s+%s", GET_REG16(REG_BX), GET_REG16(REG_DI));
 			break;
 		case 0b010: // base rel indexed stack - BP + SI
-			MNEM_F(t, "%s + %s", GET_REG16(REG_BP), GET_REG16(REG_SI));
+			MNEM_F(t, "%s+%s", GET_REG16(REG_BP), GET_REG16(REG_SI));
 			break;
 		case 0b011: // base rel indexed stack - BP + DI
-			MNEM_F(t, "%s + %s", GET_REG16(REG_BP), GET_REG16(REG_DI));
+			MNEM_F(t, "%s+%s", GET_REG16(REG_BP), GET_REG16(REG_DI));
 			break;
 		case 0b100: // implied SI
 			MNEM_F(t, "%s", GET_REG16(REG_SI));
@@ -146,7 +134,42 @@ static void get_base_mnem(I8086_MNEM* mnem, char* t) {
 			break;
 	}
 }
-static void modrm_get_mnem(I8086_MNEM* mnem) {
+static int get_seg_index(I8086_MNEM* mnem) {
+	if (mnem->segment_prefix != 0xFF) {
+		return mnem->segment_prefix; // CS/DS/ES/SS override
+	}
+
+	// mod = 00 special case for r/m=110 -> [disp16] uses DS
+	if (mnem->modrm.mod == 0b00 && mnem->modrm.rm == 0b110) {
+		return SEG_DS;
+	}
+
+	switch (mnem->modrm.rm) {
+		case 0b010: // [BP+SI]
+		case 0b011: // [BP+DI]
+		case 0b110: // [BP] (mod != 00)
+			return SEG_SS;  // defaults to SS
+		default:
+			return SEG_DS;  // everything else defaults to DS
+	}
+}
+static void get_seg(I8086_MNEM* mnem, char* buf, const char* fmt) {
+	MNEM_F(buf, fmt, seg_mnem[get_seg_index(mnem)]);
+}
+
+static void get_signed_disp(char* buf, int disp) {
+	if (disp < 0) {
+		sprintf(buf + strlen(buf), "-%Xh", -disp);
+	}
+	else {
+		sprintf(buf + strlen(buf), "+%Xh", disp);
+	}
+}
+static void get_unsigned_disp(char* buf, int disp) {
+	sprintf(buf + strlen(buf), "%Xh", disp);
+}
+
+void i8086_mnem_get_modrm(I8086_MNEM* mnem, char* buf, const char* fmt) {
 	// Get R/M pointer
 	char t[32] = { 0 };
 	switch (mnem->modrm.mod) {
@@ -154,51 +177,72 @@ static void modrm_get_mnem(I8086_MNEM* mnem) {
 		case 0b00:
 			if (mnem->modrm.rm == 0b110) {
 				// displacement mode - [ disp16 ]
-				uint16_t imm = FETCH_WORD();
-				MNEM_F(mnem->addressing_str, "[%04X]", imm);
+				uint16_t imm = fetch_word(mnem);
+				get_seg(mnem, t, "%s:");
+				get_unsigned_disp(t, imm);
+				MNEM_F(buf, fmt, t);
 			}
 			else {
 				// register mode - [ base16 ]
+				get_seg(mnem, t, "%s:");
 				get_base_mnem(mnem, t);
-				MNEM_F(mnem->addressing_str, "[%s]", t);
+				MNEM_F(buf, fmt, t);
 			}
 			break;
 
 		case 0b01: {
 			// memory mode; 8bit displacement - [ base16 + disp8 ]
-			uint8_t imm = FETCH_BYTE();
+			int8_t imm = fetch_byte(mnem);
+			get_seg(mnem, t, "%s:");
 			get_base_mnem(mnem, t);
-			MNEM_F(mnem->addressing_str, "[%s + %02X]", t, imm);
+			get_signed_disp(t, imm);
+			MNEM_F(buf, fmt, t);
 		} break;
 
 		case 0b10: {
 			// memory mode; 16bit displacement - [ base16 + disp16 ]
-			uint16_t imm = FETCH_WORD();
+			int16_t imm = fetch_word(mnem);
+			get_seg(mnem, t, "%s:");
 			get_base_mnem(mnem, t);
-			MNEM_F(mnem->addressing_str, "[%s + %04X]", t, imm);
+			get_signed_disp(t, imm);
+			MNEM_F(buf, fmt, t);
 		} break;
 	}
 }
 
-const char* modrm_get_mnem16(I8086_MNEM* mnem) {
+static const char* modrm_get_mnem16_nos(I8086_MNEM* mnem) {
+	// Get R/M pointer; no operand size
+	if (mnem->modrm.mod == 0b11) {
+		return GET_REG16(mnem->modrm.rm);
+	}
+	else {
+		i8086_mnem_get_modrm(mnem, mnem->addressing_str, "[%s]");
+		return mnem->addressing_str;
+	}
+}
+static const char* modrm_get_mnem16(I8086_MNEM* mnem) {
 	// Get R/M pointer
 	if (mnem->modrm.mod == 0b11) {
 		return GET_REG16(mnem->modrm.rm);
 	}
 	else {
-		modrm_get_mnem(mnem);
+		i8086_mnem_get_modrm(mnem, mnem->addressing_str, "word [%s]");
 		return mnem->addressing_str;
 	}
 }
-const char* modrm_get_mnem8(I8086_MNEM* mnem) {
+static const char* modrm_get_mnem8(I8086_MNEM* mnem) {
 	// Get R/M pointer
 	if (mnem->modrm.mod == 0b11) {
 		return GET_REG8(mnem->modrm.rm);
 	}
 	else {
-		modrm_get_mnem(mnem);
+		i8086_mnem_get_modrm(mnem, mnem->addressing_str, "byte [%s]");
 		return mnem->addressing_str;
 	}
+}
+
+static void fetch_modrm(I8086_MNEM* mnem) {
+	mnem->modrm.byte = fetch_byte(mnem);
 }
 
 /* Opcodes */
@@ -209,25 +253,26 @@ static void add_rm_imm(I8086_MNEM* mnem) {
 		if (SW == 0b01) {
 			/* reg16, disp16 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint16_t imm = FETCH_WORD();
-			MNEM("add %s, %04X", rm, imm);
+			uint16_t imm = fetch_word(mnem);
+			MNEM("add %s, %Xh", rm, imm);
 		}
 		else {
 			/* reg16, disp8 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint8_t imm = FETCH_BYTE();
-			MNEM("add %s, %02X", rm, imm);
+			uint8_t imm = fetch_byte(mnem);
+			uint16_t se = sign_extend8_16(imm);
+			MNEM("add %s, %Xh", rm, se);
 		}
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		uint8_t imm = FETCH_BYTE();
-		MNEM("add %s, %02X", rm, imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("add %s, %Xh", rm, imm);
 	}
 }
 static void add_rm_reg(I8086_MNEM* mnem) {
 	/* add r/m, reg (00/01/02/03) b000000DW */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		const char* reg = GET_REG16(mnem->modrm.reg);
@@ -244,12 +289,12 @@ static void add_rm_reg(I8086_MNEM* mnem) {
 static void add_accum_imm(I8086_MNEM* mnem) {
 	/* add AL/AX, imm (04/05) b0000010W */
 	if (W) {
-		uint16_t imm = FETCH_WORD();
-		MNEM("add ax, %04X", imm);
+		uint16_t imm = fetch_word(mnem);
+		MNEM("add ax, %Xh", imm);
 	}
 	else {
-		uint8_t imm = FETCH_BYTE();
-		MNEM("add al, %02X", imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("add al, %Xh", imm);
 	}
 }
 
@@ -259,25 +304,26 @@ static void or_rm_imm(I8086_MNEM* mnem) {
 		if (SW == 0b01) {
 			/* reg16, disp16 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint16_t imm = FETCH_WORD();
-			MNEM("or %s, %04X", rm, imm);
+			uint16_t imm = fetch_word(mnem);
+			MNEM("or %s, %Xh", rm, imm);
 		}
 		else {
 			/* reg16, disp8 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint8_t imm = FETCH_BYTE();
-			MNEM("or %s, %02X", rm, imm);
+			uint8_t imm = fetch_byte(mnem);
+			uint16_t se = sign_extend8_16(imm);
+			MNEM("or %s, %Xh", rm, se);
 		}
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		uint8_t imm = FETCH_BYTE();
-		MNEM("or %s, %02X", rm, imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("or %s, %Xh", rm, imm);
 	}
 }
 static void or_rm_reg(I8086_MNEM* mnem) {
 	/* or r/m, reg (08/0A/09/0B) b000010DW */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		const char* reg = GET_REG16(mnem->modrm.reg);
@@ -294,12 +340,12 @@ static void or_rm_reg(I8086_MNEM* mnem) {
 static void or_accum_imm(I8086_MNEM* mnem) {
 	/* or AL/AX, imm (0C/0D) b0000110W */
 	if (W) {
-		uint16_t imm = FETCH_WORD();
-		MNEM("or ax, %04X", imm);
+		uint16_t imm = fetch_word(mnem);
+		MNEM("or ax, %Xh", imm);
 	}
 	else {
-		uint8_t imm = FETCH_BYTE();
-		MNEM("or al, %02X", imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("or al, %Xh", imm);
 	}
 }
 
@@ -309,25 +355,26 @@ static void adc_rm_imm(I8086_MNEM* mnem) {
 		if (SW == 0b01) {
 			/* reg16, disp16 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint16_t imm = FETCH_WORD();
-			MNEM("adc %s, %04X", rm, imm);
+			uint16_t imm = fetch_word(mnem);
+			MNEM("adc %s, %Xh", rm, imm);
 		}
 		else {
 			/* reg16, disp8 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint8_t imm = FETCH_BYTE();
-			MNEM("adc %s, %02X", rm, imm);
+			uint8_t imm = fetch_byte(mnem);
+			uint16_t se = sign_extend8_16(imm);
+			MNEM("adc %s, %Xh", rm, se);
 		}
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		uint8_t imm = FETCH_BYTE();
-		MNEM("adc %s, %02X", rm, imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("adc %s, %Xh", rm, imm);
 	}
 }
 static void adc_rm_reg(I8086_MNEM* mnem) {
 	/* adc r/m, reg (10/12/11/13) b000100DW */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		const char* reg = GET_REG16(mnem->modrm.reg);
@@ -344,12 +391,12 @@ static void adc_rm_reg(I8086_MNEM* mnem) {
 static void adc_accum_imm(I8086_MNEM* mnem) {
 	/* adc AL/AX, imm (14/15) b0001010W */
 	if (W) {
-		uint16_t imm = FETCH_WORD();
-		MNEM("adc ax, %04X", imm);
+		uint16_t imm = fetch_word(mnem);
+		MNEM("adc ax, %Xh", imm);
 	}
 	else {
-		uint8_t imm = FETCH_BYTE();
-		MNEM("adc al, %02X", imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("adc al, %Xh", imm);
 	}
 }
 
@@ -359,25 +406,26 @@ static void sbb_rm_imm(I8086_MNEM* mnem) {
 		if (SW == 0b01) {
 			/* reg16, disp16 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint16_t imm = FETCH_WORD();
-			MNEM("sbb %s, %04X", rm, imm);
+			uint16_t imm = fetch_word(mnem);
+			MNEM("sbb %s, %Xh", rm, imm);
 		}
 		else {
 			/* reg16, disp8 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint8_t imm = FETCH_BYTE();
-			MNEM("sbb %s, %02X", rm, imm);
+			uint8_t imm = fetch_byte(mnem);
+			uint16_t se = sign_extend8_16(imm);
+			MNEM("sbb %s, %Xh", rm, se);
 		}
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		uint8_t imm = FETCH_BYTE();
-		MNEM("sbb %s, %02X", rm, imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("sbb %s, %Xh", rm, imm);
 	}
 }
 static void sbb_rm_reg(I8086_MNEM* mnem) {
 	/* sbb r/m, reg (18/1A/19/1B) b000110DW */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		const char* reg = GET_REG16(mnem->modrm.reg);
@@ -394,12 +442,12 @@ static void sbb_rm_reg(I8086_MNEM* mnem) {
 static void sbb_accum_imm(I8086_MNEM* mnem) {
 	/* sbb AL/AX, imm (1C/1D) b0001110W */
 	if (W) {
-		uint16_t imm = FETCH_WORD();
-		MNEM("sbb ax, %04X", imm);
+		uint16_t imm = fetch_word(mnem);
+		MNEM("sbb ax, %Xh", imm);
 	}
 	else {
-		uint8_t imm = FETCH_BYTE();
-		MNEM("sbb al, %02X", imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("sbb al, %Xh", imm);
 	}
 }
 
@@ -409,25 +457,26 @@ static void and_rm_imm(I8086_MNEM* mnem) {
 		if (SW == 0b01) {
 			/* reg16, disp16 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint16_t imm = FETCH_WORD();
-			MNEM("and %s, %04X", rm, imm);
+			uint16_t imm = fetch_word(mnem);
+			MNEM("and %s, %Xh", rm, imm);
 		}
 		else {
 			/* reg16, disp8 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint8_t imm = FETCH_BYTE();
-			MNEM("and %s, %02X", rm, imm);
+			uint8_t imm = fetch_byte(mnem);
+			uint16_t se = sign_extend8_16(imm);
+			MNEM("and %s, %Xh", rm, se);
 		}
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		uint8_t imm = FETCH_BYTE();
-		MNEM("and %s, %02X", rm, imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("and %s, %Xh", rm, imm);
 	}
 }
 static void and_rm_reg(I8086_MNEM* mnem) {
 	/* and r/m, reg (20/22/21/23) b001000DW */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		const char* reg = GET_REG16(mnem->modrm.reg);
@@ -444,12 +493,12 @@ static void and_rm_reg(I8086_MNEM* mnem) {
 static void and_accum_imm(I8086_MNEM* mnem) {
 	/* and AL/AX, imm (24/25) b0010010W */
 	if (W) {
-		uint16_t imm = FETCH_WORD();
-		MNEM("and ax, %04X", imm);
+		uint16_t imm = fetch_word(mnem);
+		MNEM("and ax, %Xh", imm);
 	}
 	else {
-		uint8_t imm = FETCH_BYTE();
-		MNEM("and al, %02X", imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("and al, %Xh", imm);
 	}
 }
 
@@ -459,25 +508,26 @@ static void sub_rm_imm(I8086_MNEM* mnem) {
 		if (SW == 0b01) {
 			/* reg16, disp16 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint16_t imm = FETCH_WORD();
-			MNEM("sub %s, %04X", rm, imm);
+			uint16_t imm = fetch_word(mnem);
+			MNEM("sub %s, %Xh", rm, imm);
 		}
 		else {
 			/* reg16, disp8 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint8_t imm = FETCH_BYTE();
-			MNEM("sub %s, %02X", rm, imm);
+			uint8_t imm = fetch_byte(mnem);
+			uint16_t se = sign_extend8_16(imm);
+			MNEM("sub %s, %Xh", rm, se);
 		}
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		uint8_t imm = FETCH_BYTE();
-		MNEM("sub %s, %02X", rm, imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("sub %s, %Xh", rm, imm);
 	}
 }
 static void sub_rm_reg(I8086_MNEM* mnem) {
 	/* sub r/m, reg (28/2A/29/2B) b001010DW */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		const char* reg = GET_REG16(mnem->modrm.reg);
@@ -494,12 +544,12 @@ static void sub_rm_reg(I8086_MNEM* mnem) {
 static void sub_accum_imm(I8086_MNEM* mnem) {
 	/* sub AL/AX, imm (2C/2D) b0010110W */
 	if (W) {
-		uint16_t imm = FETCH_WORD();
-		MNEM("sub ax, %04X", imm);
+		uint16_t imm = fetch_word(mnem);
+		MNEM("sub ax, %Xh", imm);
 	}
 	else {
-		uint8_t imm = FETCH_BYTE();
-		MNEM("sub al, %02X", imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("sub al, %Xh", imm);
 	}
 }
 
@@ -509,25 +559,26 @@ static void xor_rm_imm(I8086_MNEM* mnem) {
 		if (SW == 0b01) {
 			/* reg16, disp16 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint16_t imm = FETCH_WORD();
-			MNEM("xor %s, %04X", rm, imm);
+			uint16_t imm = fetch_word(mnem);
+			MNEM("xor %s, %Xh", rm, imm);
 		}
 		else {
 			/* reg16, disp8 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint8_t imm = FETCH_BYTE();
-			MNEM("xor %s, %02X", rm, imm);
+			uint8_t imm = fetch_byte(mnem);
+			uint16_t se = sign_extend8_16(imm);
+			MNEM("xor %s, %Xh", rm, se);
 		}
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		uint8_t imm = FETCH_BYTE();
-		MNEM("xor %s, %02X", rm, imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("xor %s, %Xh", rm, imm);
 	}
 }
 static void xor_rm_reg(I8086_MNEM* mnem) {
 	/* xor r/m, reg (30/32/31/33) b001100DW */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		const char* reg = GET_REG16(mnem->modrm.reg);
@@ -544,12 +595,12 @@ static void xor_rm_reg(I8086_MNEM* mnem) {
 static void xor_accum_imm(I8086_MNEM* mnem) {
 	/* xor AL/AX, imm (34/35) b0011010W */
 	if (W) {
-		uint16_t imm = FETCH_WORD();
-		MNEM("xor ax, %04X", imm);
+		uint16_t imm = fetch_word(mnem);
+		MNEM("xor ax, %Xh", imm);
 	}
 	else {
-		uint8_t imm = FETCH_BYTE();
-		MNEM("xor al, %02X", imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("xor al, %Xh", imm);
 	}
 }
 
@@ -559,25 +610,26 @@ static void cmp_rm_imm(I8086_MNEM* mnem) {
 		if (SW == 0b01) {
 			/* reg16, disp16 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint16_t imm = FETCH_WORD();
-			MNEM("cmp %s, %04X", rm, imm);
+			uint16_t imm = fetch_word(mnem);
+			MNEM("cmp %s, %Xh", rm, imm);
 		}
 		else {
 			/* reg16, disp8 */
 			const char* rm = modrm_get_mnem16(mnem);
-			uint8_t imm = FETCH_BYTE();
-			MNEM("cmp %s, %02X", rm, imm);
+			uint8_t imm = fetch_byte(mnem);
+			uint16_t se = sign_extend8_16(imm);
+			MNEM("cmp %s, %Xh", rm, se);
 		}
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		uint8_t imm = FETCH_BYTE();
-		MNEM("cmp %s, %02X", rm, imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("cmp %s, %Xh", rm, imm);
 	}
 }
 static void cmp_rm_reg(I8086_MNEM* mnem) {
 	/* cmp r/m, reg (38/39/3A/3B) b001110DW */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		const char* reg = GET_REG16(mnem->modrm.reg);
@@ -594,12 +646,12 @@ static void cmp_rm_reg(I8086_MNEM* mnem) {
 static void cmp_accum_imm(I8086_MNEM* mnem) {
 	/* cmp AL/AX, imm (3C/3D) b0011110W */
 	if (W) {
-		uint16_t imm = FETCH_WORD();
-		MNEM("cmp ax, %04X", imm);
+		uint16_t imm = fetch_word(mnem);
+		MNEM("cmp ax, %Xh", imm);
 	}
 	else {
-		uint8_t imm = FETCH_BYTE();
-		MNEM("cmp al, %02X", imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("cmp al, %Xh", imm);
 	}
 }
 
@@ -608,18 +660,18 @@ static void test_rm_imm(I8086_MNEM* mnem) {
 	if (W) {
 		/* reg16, disp16 */
 		const char* rm = modrm_get_mnem16(mnem);
-		uint16_t imm = FETCH_WORD();
-		MNEM("test %s, %04X", rm, imm);		
+		uint16_t imm = fetch_word(mnem);
+		MNEM("test %s, %Xh", rm, imm);		
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		uint8_t imm = FETCH_BYTE();
-		MNEM("test %s, %02X", rm, imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("test %s, %Xh", rm, imm);
 	}
 }
 static void test_rm_reg(I8086_MNEM* mnem) {
 	/* test r/m, reg (84/85) b1000010W */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		const char* reg = GET_REG16(mnem->modrm.reg);
@@ -636,12 +688,12 @@ static void test_rm_reg(I8086_MNEM* mnem) {
 static void test_accum_imm(I8086_MNEM* mnem) {
 	/* test AL/AX, imm (A8/A9) b1010100W */
 	if (W) {
-		uint16_t imm = FETCH_WORD();
-		MNEM("test ax, %04X", imm);
+		uint16_t imm = fetch_word(mnem);
+		MNEM("test ax, %Xh", imm);
 	}
 	else {
-		uint8_t imm = FETCH_BYTE();
-		MNEM("test al, %02X", imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("test al, %Xh", imm);
 	}
 }
 
@@ -663,13 +715,13 @@ static void aas(I8086_MNEM* mnem) {
 }
 static void aam(I8086_MNEM* mnem) {
 	/* ASCII Adjust for Multiply (D4 0A) b11010100 00001010 */
-	uint8_t divisor = FETCH_BYTE(); // undocumented operand; normally 0x0A
-	MNEM("aam %02X", divisor);
+	uint8_t divisor = fetch_byte(mnem); // undocumented operand; normally 0x0A
+	MNEM("aam %Xh", divisor);
 }
 static void aad(I8086_MNEM* mnem) {
 	/* ASCII Adjust for Division (D5 0A) b11010101 00001010 */
-	uint8_t divisor = FETCH_BYTE(); // undocumented operand; normally 0x0A
-	MNEM("aad %02X", divisor);
+	uint8_t divisor = fetch_byte(mnem); // undocumented operand; normally 0x0A
+	MNEM("aad %Xh", divisor);
 }
 static void salc(I8086_MNEM* mnem) {
 	/* set carry in AL (D6) b11010110 undocumented opcode */
@@ -702,12 +754,19 @@ static void pop_reg(I8086_MNEM* mnem) {
 	MNEM("pop %s", GET_REG16(mnem->opcode));
 }
 static void push_rm(I8086_MNEM* mnem) {
-	/* Push R/M (FF, R/M reg = 110) b11111111 */
-	const char* rm = modrm_get_mnem16(mnem);
-	MNEM("push %s", rm);
+	/* Push R/M (FE/FF, R/M reg = 110) b1111111W */
+	if (W) {
+		const char* rm = modrm_get_mnem16(mnem);
+		MNEM("push %s", rm);
+	}
+	else {
+		const char* rm = modrm_get_mnem8(mnem);
+		MNEM("push %s", rm);
+	}
 }
 static void pop_rm(I8086_MNEM* mnem) {
 	/* Pop R/M (8F) b10001111 */
+	fetch_modrm(mnem);
 	const char* rm = modrm_get_mnem16(mnem);
 	MNEM("pop %s", rm);
 }
@@ -727,20 +786,20 @@ static void nop(I8086_MNEM* mnem) {
 static void xchg_accum_reg(I8086_MNEM* mnem) {
 	/* xchg AX, reg16 (91 - 97) b10010REG */	
 	const char* reg = GET_REG16(mnem->opcode);
-	MNEM("xchg AX, %s", reg);
+	MNEM("xchg %s, ax", reg);
 }
 static void xchg_rm_reg(I8086_MNEM* mnem) {
 	/* xchg R/M, reg16 (86/87) b1000011W */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		const char* reg = GET_REG16(mnem->modrm.reg);
-		MNEM("xchg %s, %s", rm, reg);
+		MNEM("xchg %s, %s", reg, rm);
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
 		const char* reg = GET_REG8(mnem->modrm.reg);
-		MNEM("xchg %s, %s", rm, reg);
+		MNEM("xchg %s, %s", reg, rm);
 		
 	}
 }
@@ -826,371 +885,324 @@ static void dec_rm(I8086_MNEM* mnem) {
 
 static void rol(I8086_MNEM* mnem) {
 	/* Rotate left (D0/D1/D2/D3, R/M reg = 000) b110100VW */
-	char count[3] = { 0 };
+	char count[5] = { 0 };
 	if (VW) {
-		count[0] = 'c';
-		count[1] = 'l';
-	}
-	else {
-		count[0] = '1';
+		strcpy(count, ", cl");
 	}
 
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
-		MNEM("rol %s, %s", rm, count);
+		MNEM("rol %s%s", rm, count);
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		MNEM("rol %s, %s", rm, count);
+		MNEM("rol %s%s", rm, count);
 	}
 }
 static void ror(I8086_MNEM* mnem) {
 	/* Rotate left (D0/D1/D2/D3, R/M reg = 001) b110100VW */
-	char count[3] = { 0 };
+	char count[5] = { 0 };
 	if (VW) {
-		count[0] = 'c';
-		count[1] = 'l';
-	}
-	else {
-		count[0] = '1';
+		strcpy(count, ", cl");
 	}
 
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
-		MNEM("ror %s, %s", rm, count);
+		MNEM("ror %s%s", rm, count);
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		MNEM("ror %s, %s", rm, count);
+		MNEM("ror %s%s", rm, count);
 	}
 }
 static void rcl(I8086_MNEM* mnem) {
 	/* Rotate through carry left (D0/D1/D2/D3, R/M reg = 010) b110100VW */
-	char count[3] = { 0 };
+	char count[5] = { 0 };
 	if (VW) {
-		count[0] = 'c';
-		count[1] = 'l';
-	}
-	else {
-		count[0] = '1';
+		strcpy(count, ", cl");
 	}
 
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
-		MNEM("rcl %s, %s", rm, count);
+		MNEM("rcl %s%s", rm, count);
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		MNEM("rcl %s, %s", rm, count);
+		MNEM("rcl %s%s", rm, count);
 	}
 }
 static void rcr(I8086_MNEM* mnem) {
 	/* Rotate through carry right (D0/D1/D2/D3, R/M reg = 011) b110100VW */
-	char count[3] = { 0 };
+	char count[5] = { 0 };
 	if (VW) {
-		count[0] = 'c';
-		count[1] = 'l';
-	}
-	else {
-		count[0] = '1';
+		strcpy(count, ", cl");
 	}
 
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
-		MNEM("rcr %s, %s", rm, count);
+		MNEM("rcr %s%s", rm, count);
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		MNEM("rcr %s, %s", rm, count);
+		MNEM("rcr %s%s", rm, count);
 	}
 }
 static void shl(I8086_MNEM* mnem) {
 	/* Shift left (D0/D1/D2/D3, R/M reg = 100) b110100VW */
-	char count[3] = { 0 };
+	char count[5] = { 0 };
 	if (VW) {
-		count[0] = 'c';
-		count[1] = 'l';
-	}
-	else {
-		count[0] = '1';
+		strcpy(count, ", cl");
 	}
 
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
-		MNEM("shl %s, %s", rm, count);
+		MNEM("shl %s%s", rm, count);
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		MNEM("shl %s, %s", rm, count);
+		MNEM("shl %s%s", rm, count);
 	}
 }
 static void shr(I8086_MNEM* mnem) {
 	/* Shift Logical right (D0/D1/D2/D3, R/M reg = 101) b110100VW */
-	char count[3] = { 0 };
+	char count[5] = { 0 };
 	if (VW) {
-		count[0] = 'c';
-		count[1] = 'l';
-	}
-	else {
-		count[0] = '1';
+		strcpy(count, ", cl");
 	}
 
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
-		MNEM("shr %s, %s", rm, count);
+		MNEM("shr %s%s", rm, count);
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		MNEM("shr %s, %s", rm, count);
+		MNEM("shr %s%s", rm, count);
 	}
 }
 static void sar(I8086_MNEM* mnem) {
 	/* Shift Arithmetic right (D0/D1/D2/D3, R/M reg = 111) b110100VW */
-	char count[3] = { 0 };
+	char count[5] = { 0 };
 	if (VW) {
-		count[0] = 'c';
-		count[1] = 'l';
-	}
-	else {
-		count[0] = '1';
+		strcpy(count, ", cl");
 	}
 
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
-		MNEM("sar %s, %s", rm, count);
+		MNEM("sar %s%s", rm, count);
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		MNEM("sar %s, %s", rm, count);
+		MNEM("sar %s%s", rm, count);
+	}
+}
+
+static void setmo(I8086_MNEM* mnem) {
+	/* Set Minus One (D0/D1/D2/D3, R/M reg = 110) b110100VW (undocumented) */
+	char count[5] = { 0 };
+	char postfix[2] = { 0 };
+	if (VW) {
+		strcpy(count, ", cl");
+		postfix[0] = 'c';
+	}
+
+	if (W) {
+		const char* rm = modrm_get_mnem16(mnem);
+		MNEM("setmo%s %s%s", postfix, rm, count);
+	}
+	else {
+		const char* rm = modrm_get_mnem8(mnem);
+		MNEM("setmo%s %s%s", postfix, rm, count);
 	}
 }
 
 static void jcc(I8086_MNEM* mnem) {
 	/* conditional jump(70-7F) b011XCCCC
 	   8086 cpu decode 60-6F the same as 70-7F */
-	uint8_t imm = FETCH_BYTE();
+	uint8_t disp = fetch_byte(mnem);
+	uint16_t imm = sign_extend8_16(disp);
+	imm += mnem->counter;
 
-#ifdef CONVERT_REL_TO_ABS
-	uint16_t se = sign_extend8_16(imm);
-	uint16_t offset = TO_LABEL_OFFSET(se);
 	switch (CCCC) {
 		case I8086_JCC_JO:
-			MNEM("jo %04X", offset);
+			MNEM("jo %04Xh", imm);
 			break;
 		case I8086_JCC_JNO:
-			MNEM("jno %04X", offset);
+			MNEM("jno %04Xh", imm);
 			break;
 		case I8086_JCC_JC:
-			MNEM("jc %04X", offset);
+			MNEM("jb %04Xh", imm);
 			break;
 		case I8086_JCC_JNC:
-			MNEM("jnc %04X", offset);
+			MNEM("jnb %04Xh", imm);
 			break;
 		case I8086_JCC_JZ:
-			MNEM("jz %04X", offset);
+			MNEM("jz %04Xh", imm);
 			break;
 		case I8086_JCC_JNZ:
-			MNEM("jnz %04X", offset);
+			MNEM("jnz %04Xh", imm);
 			break;
 		case I8086_JCC_JBE:
-			MNEM("jbe %04X", offset);
+			MNEM("jbe %04Xh", imm);
 			break;
 		case I8086_JCC_JA:
-			MNEM("ja %04X", offset);
+			MNEM("jnbe %04Xh", imm);
 			break;
 		case I8086_JCC_JS:
-			MNEM("js %04X", offset);
+			MNEM("js %04Xh", imm);
 			break;
 		case I8086_JCC_JNS:
-			MNEM("jns %04X", offset);
+			MNEM("jns %04Xh", imm);
 			break;
 		case I8086_JCC_JPE:
-			MNEM("jpe %04X", offset);
+			MNEM("jp %04Xh", imm);
 			break;
 		case I8086_JCC_JPO:
-			MNEM("jpo %04X", offset);
+			MNEM("jnp %04Xh", imm);
 			break;
 		case I8086_JCC_JL:
-			MNEM("jl %04X", offset);
+			MNEM("jl %04Xh", imm);
 			break;
 		case I8086_JCC_JGE:
-			MNEM("jge %04X", offset);
+			MNEM("jnl %04Xh", imm);
 			break;
 		case I8086_JCC_JLE:
-			MNEM("jle %04X", offset);
+			MNEM("jle %04Xh", imm);
 			break;
 		case I8086_JCC_JG:
-			MNEM("jg %04X", offset);
+			MNEM("jnle %04Xh", imm);
 			break;
 	}
-#else
-	switch (CCCC) {
-		case I8086_JCC_JO:
-			MNEM("jo %02X", imm);
-			break;
-		case I8086_JCC_JNO:
-			MNEM("jno %02X", imm);
-			break;
-		case I8086_JCC_JC:
-			MNEM("jc %02X", imm);
-			break;
-		case I8086_JCC_JNC:
-			MNEM("jnc %02X", imm);
-			break;
-		case I8086_JCC_JZ:
-			MNEM("jz %02X", imm);
-			break;
-		case I8086_JCC_JNZ:
-			MNEM("jnz %02X", imm);
-			break;
-		case I8086_JCC_JBE:
-			MNEM("jbe %02X", imm);
-			break;
-		case I8086_JCC_JA:
-			MNEM("ja %04X", imm);
-			break;
-		case I8086_JCC_JS:
-			MNEM("js %02X", imm);
-			break;
-		case I8086_JCC_JNS:
-			MNEM("jns %02X", imm);
-			break;
-		case I8086_JCC_JPE:
-			MNEM("jpe %02X", imm);
-			break;
-		case I8086_JCC_JPO:
-			MNEM("jpo %02X", imm);
-			break;
-		case I8086_JCC_JL:
-			MNEM("jl %02X", imm);
-			break;
-		case I8086_JCC_JGE:
-			MNEM("jge %02X", imm);
-			break;
-		case I8086_JCC_JLE:
-			MNEM("jle %02X", imm);
-			break;
-		case I8086_JCC_JG:
-			MNEM("jg %02X", imm);
-			break;
-	}
-#endif
 }
 static void jmp_intra_direct(I8086_MNEM* mnem) {
 	/* Jump near (E9) b11101001 */
-	uint16_t imm = FETCH_WORD();
-#ifdef CONVERT_REL_TO_ABS
-	MNEM("jmp near %04X", TO_LABEL_OFFSET(imm));
-#else
-	MNEM("jmp near %02X", imm);
-#endif
+	uint16_t imm = fetch_word(mnem);
+	imm += mnem->counter;
+	MNEM("jmp %04Xh", imm);
 }
 static void jmp_inter_direct(I8086_MNEM* mnem) {
 	/* Jump addr:seg (EA) b11101010 */
-	uint16_t imm = FETCH_WORD();
-	uint16_t imm2 = FETCH_WORD();
-	MNEM("jmp far %04X:%04X", imm2, imm);
+	uint16_t imm = fetch_word(mnem);
+	uint16_t imm2 = fetch_word(mnem);
+	MNEM("jmpf %04Xh:%04Xh", imm2, imm);
 }
 static void jmp_intra_direct_short(I8086_MNEM* mnem) {
 	/* Jump near short (EB) b11101011 */
-	uint8_t imm = FETCH_BYTE();
-#ifdef CONVERT_REL_TO_ABS
+	uint8_t imm = fetch_byte(mnem);
 	uint16_t se = sign_extend8_16(imm);
-	MNEM("jmp short %04X", TO_LABEL_OFFSET(se)); 
-#else
-	MNEM("jmp short %02X", imm);
-#endif
+	se += mnem->counter;
+	MNEM("jmp %04Xh", se);
 }
 static void jmp_intra_indirect(I8086_MNEM* mnem) {
-	/* Jump intra indirect (FF, R/M reg = 100) b11111111 */	
-	const char* rm = modrm_get_mnem16(mnem);
-	MNEM("jmp near %s", rm);
+	/* Jump near indirect (FE/FF, R/M reg = 100) b1111111W */
+	if (W) {
+		const char* rm = modrm_get_mnem16(mnem);
+		MNEM("jmp %s", rm);
+	}
+	else {
+		const char* rm = modrm_get_mnem8(mnem);
+		MNEM("jmp %s", rm);
+	}
 }
 static void jmp_inter_indirect(I8086_MNEM* mnem) {
-	/* Jump inter indirect (FF, R/M reg = 101) b11111111 */
-	const char* rm = modrm_get_mnem16(mnem);
-	MNEM("jmp far %s", rm);
+	/* Jump far indirect (FE/FF, R/M reg = 101) b1111111W */
+	if (W) {
+		const char* rm = modrm_get_mnem16(mnem);
+		MNEM("jmpf %s", rm);
+	}
+	else {
+		const char* rm = modrm_get_mnem8(mnem);
+		MNEM("jmpf %s", rm);
+	}
 }
 
 static void call_intra_direct(I8086_MNEM* mnem) {
 	/* Call disp (E8) b11101000 */
-	uint16_t imm = FETCH_WORD();
-#ifdef CONVERT_REL_TO_ABS
-	MNEM("call near %04X", TO_LABEL_OFFSET(imm));
-#else
-	MNEM("call near %02X", imm);
-#endif
+	uint16_t imm = fetch_word(mnem);
+	imm += mnem->counter;
+	MNEM("call %04Xh", imm);
 }
 static void call_inter_direct(I8086_MNEM* mnem) {
 	/* Call addr:seg (9A) b10011010 */
-	uint16_t imm = FETCH_WORD();
-	uint16_t imm2 = FETCH_WORD();
-	MNEM("call far %04X:%04X", imm2, imm);
+	uint16_t imm = fetch_word(mnem);
+	uint16_t imm2 = fetch_word(mnem);
+	MNEM("callf %04Xh:%04Xh", imm2, imm);
 }
 static void call_intra_indirect(I8086_MNEM* mnem) {
-	/* Call mem/reg (FF, R/M reg = 010) b11111111 */
-	const char* rm = modrm_get_mnem16(mnem);
-	MNEM("call near %s", rm);
+	/* Call near R/M (FE/FF, R/M reg = 010) b1111111W */
+	if (W) {
+		const char* rm = modrm_get_mnem16(mnem);
+		MNEM("call %s", rm);
+	}
+	else {
+		const char* rm = modrm_get_mnem8(mnem);
+		MNEM("call %s", rm);
+	}
 }
 static void call_inter_indirect(I8086_MNEM* mnem) {
-	/* Call mem (FF, R/M reg = 011) b11111111 */
-	const char* rm = modrm_get_mnem16(mnem);
-	MNEM("call far %s", rm);
+	/* Call far R/M (FE/FF, R/M reg = 011) b1111111W */
+	if (W) {
+		const char* rm = modrm_get_mnem16(mnem);
+		MNEM("callf %s", rm);
+	}
+	else {
+		const char* rm = modrm_get_mnem8(mnem);
+		MNEM("callf %s", rm);
+	}
 }
 
 static void ret_intra_add_imm(I8086_MNEM* mnem) {
 	/* Ret imm16 (C2) b11000010 
 	   undocumented* C0 decodes identically to C2 */
-	uint16_t imm = FETCH_WORD();
-	MNEM("ret %04X", imm);
+	uint16_t imm = fetch_word(mnem);
+	MNEM("retn %Xh", imm);
 }
 static void ret_intra(I8086_MNEM* mnem) {
 	/* Ret (C3) b11000011 
 	undocumented* C1 decodes identically to C3 */
-	MNEM0("ret");
+	MNEM0("retn");
 }
 static void ret_inter_add_imm(I8086_MNEM* mnem) {
 	/* Ret imm16 (CA) b11001010 
 	undocumented* C8 decodes identically to CA */
-	uint16_t imm = FETCH_WORD();
-	MNEM("ret %04X", imm);
+	uint16_t imm = fetch_word(mnem);
+	MNEM("retf %Xh", imm);
 }
 static void ret_inter(I8086_MNEM* mnem) {
 	/* Ret (CB) b11001011 
 	undocumented* C9 decodes identically to CB */
-	MNEM0("ret");
+	MNEM0("retf");
 }
 
 static void mov_rm_imm(I8086_MNEM* mnem) {
 	/* mov r/m, imm (C6/C7) b1100011W */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
-		uint16_t imm = FETCH_WORD();
-		MNEM("mov %s, %04X", rm, imm);
+		uint16_t imm = fetch_word(mnem);
+		MNEM("mov %s, %Xh", rm, imm);
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
-		uint8_t imm = FETCH_BYTE();
-		MNEM("mov %s, %02X", rm, imm);
+		uint8_t imm = fetch_byte(mnem);
+		MNEM("mov %s, %Xh", rm, imm);
 	}
 }
 static void mov_reg_imm(I8086_MNEM* mnem) {
 	/* mov r/m, reg (B0-BF) b1011WREG */
 	if (WREG) {
-		uint16_t imm = FETCH_WORD();
+		uint16_t imm = fetch_word(mnem);
 		const char* reg = GET_REG16(mnem->opcode);
-		MNEM("mov %s, %02X", reg, imm);
+		MNEM("mov %s, %Xh", reg, imm);
 	}
 	else {
-		uint8_t imm = FETCH_BYTE();
+		uint8_t imm = fetch_byte(mnem);
 		const char* reg = GET_REG8(mnem->opcode);
-		MNEM("mov %s, %02X", reg, imm);
+		MNEM("mov %s, %Xh", reg, imm);
 	}
 }
 static void mov_rm_reg(I8086_MNEM* mnem) {
 	/* mov r/m, reg (88/89/8A/8B) b100010DW */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		const char* reg = GET_REG16(mnem->modrm.reg);
@@ -1206,15 +1218,20 @@ static void mov_rm_reg(I8086_MNEM* mnem) {
 }
 static void mov_accum_mem(I8086_MNEM* mnem) {
 	/* mov AL/AX, [addr] (A0/A1/A2/A3) b101000DW */
-	uint16_t addr = FETCH_WORD();
-	MNEM_F(mnem->addressing_str, "[%04X]", addr);
-	const char* mem = mnem->addressing_str;
+	uint16_t addr = fetch_word(mnem);
+	char t[32] = { 0 };
+	get_seg(mnem, t, "%s:");
+	get_unsigned_disp(t, addr);
 	if (W) {
+		MNEM_F(mnem->addressing_str, "word [%s]", t);
+		const char* mem = mnem->addressing_str;
 		const char* reg = GET_REG16(REG_AX);
 		get_direction(mnem, &reg, &mem);
 		MNEM("mov %s, %s", reg, mem);
 	}
 	else {
+		MNEM_F(mnem->addressing_str, "byte [%s]", t);
+		const char* mem = mnem->addressing_str;
 		const char* reg = GET_REG8(REG_AL);
 		get_direction(mnem, &reg, &mem);
 		MNEM("mov %s, %s", reg, mem);
@@ -1222,7 +1239,7 @@ static void mov_accum_mem(I8086_MNEM* mnem) {
 }
 static void mov_seg(I8086_MNEM* mnem) {
 	/* mov r/m, seg (8C/8E) b100011D0 */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	const char* rm = modrm_get_mnem16(mnem);
 	const char* reg = seg_mnem[mnem->modrm.reg & 3];
 	get_direction(mnem, &reg, &rm);
@@ -1231,32 +1248,32 @@ static void mov_seg(I8086_MNEM* mnem) {
 
 static void lea(I8086_MNEM* mnem) {
 	/* lea reg16, mem (8D) b10001101 */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	const char* reg = GET_REG16(mnem->modrm.reg);
-	const char* mem = modrm_get_mnem16(mnem);
+	const char* mem = modrm_get_mnem16_nos(mnem);
 	MNEM("lea %s, %s", reg, mem);
 }
 
 static void not(I8086_MNEM* mnem) {
-	/* not reg (F6/F7, R/M reg = b010) b1111011W */
+	/* not r/m (F6/F7, R/M reg = b010) b1111011W */
 	if (W) {
-		const char* reg = GET_REG16(mnem->modrm.rm);
-		MNEM("not %s", reg);
+		const char* rm = modrm_get_mnem16(mnem);
+		MNEM("not %s", rm);
 	}
 	else {
-		const char* reg = GET_REG8(mnem->modrm.rm);
-		MNEM("not %s", reg);
+		const char* rm = modrm_get_mnem8(mnem);
+		MNEM("not %s", rm);
 	}
 }
 static void neg(I8086_MNEM* mnem) {
-	/* neg reg (F6/F7, R/M reg = b011) b1111011W */
+	/* neg r/m (F6/F7, R/M reg = b011) b1111011W */
 	if (W) {
-		const char* reg = GET_REG16(mnem->modrm.rm);
-		MNEM("neg %s", reg);
+		const char* rm = modrm_get_mnem16(mnem);
+		MNEM("neg %s", rm);
 	}
 	else {
-		const char* reg = GET_REG8(mnem->modrm.rm);
-		MNEM("neg %s", reg);
+		const char* rm = modrm_get_mnem8(mnem);
+		MNEM("neg %s", rm);
 	}
 }
 static void mul_rm(I8086_MNEM* mnem) {
@@ -1304,12 +1321,14 @@ static void idiv_rm(I8086_MNEM* mnem) {
 	}
 }
 
-#define REP_NONE     0
-#define REP_NOT_ZERO 1
-#define REP_ZERO     2
-
 static void movs(I8086_MNEM* mnem) {
 	/* movs (A4/A5) b1010010W */
+	if (mnem->segment_prefix != 0xFF) {
+		get_seg(mnem, mnem->str, "%s ");
+	}
+	if (F1) {
+		MNEM0("rep ");
+	}
 	if (W) {
 		MNEM0("movsw");
 	}
@@ -1319,6 +1338,12 @@ static void movs(I8086_MNEM* mnem) {
 }
 static void stos(I8086_MNEM* mnem) {
 	/* stos (AA/AB) b1010101W */
+	if (mnem->segment_prefix != 0xFF) {
+		get_seg(mnem, mnem->str, "%s ");
+	}
+	if (F1) {
+		MNEM0("rep ");
+	}
 	if (W) {
 		MNEM0("stosw");
 	}
@@ -1328,6 +1353,12 @@ static void stos(I8086_MNEM* mnem) {
 }
 static void lods(I8086_MNEM* mnem) {
 	/* lods (AC/AD) b1010110W */
+	if (mnem->segment_prefix != 0xFF) {
+		get_seg(mnem, mnem->str, "%s ");
+	}
+	if (F1) {
+		MNEM0("rep ");
+	}
 	if (W) {
 		MNEM0("lodsw");
 	}
@@ -1337,6 +1368,17 @@ static void lods(I8086_MNEM* mnem) {
 }
 static void cmps(I8086_MNEM* mnem) {
 	/* cmps (A6/A7) b1010011W */
+	if (mnem->segment_prefix != 0xFF) {
+		get_seg(mnem, mnem->str, "%s ");
+	}
+	if (F1) {
+		if (F1Z) {
+			MNEM0("repe ");
+		}
+		else {
+			MNEM0("repne ");
+		}
+	}
 	if (W) {
 		MNEM0("cmpsw");
 	}
@@ -1346,6 +1388,17 @@ static void cmps(I8086_MNEM* mnem) {
 }
 static void scas(I8086_MNEM* mnem) {
 	/* scas (AE/AF) b1010111W */
+	if (mnem->segment_prefix != 0xFF) {
+		get_seg(mnem, mnem->str, "%s ");
+	}
+	if (F1) {
+		if (F1Z) {
+			MNEM0("repe ");
+		}
+		else {
+			MNEM0("repne ");
+		}
+	}
 	if (W) {
 		MNEM0("scasw");
 	}
@@ -1356,15 +1409,17 @@ static void scas(I8086_MNEM* mnem) {
 
 static void les(I8086_MNEM* mnem) {
 	/* les (C4) b11000100 */
-	mnem->modrm.byte = FETCH_BYTE();
-	const char* rm = modrm_get_mnem16(mnem);
-	MNEM("les %s", rm);
+	fetch_modrm(mnem);
+	const char* reg = GET_REG16(mnem->modrm.reg);
+	const char* rm = modrm_get_mnem16_nos(mnem);
+	MNEM("les %s, dword %s", reg, rm);
 }
 static void lds(I8086_MNEM* mnem) {
 	/* lds (C5) b11000101 */
-	mnem->modrm.byte = FETCH_BYTE();
-	const char* rm = modrm_get_mnem16(mnem);
-	MNEM("lds %s", rm);
+	fetch_modrm(mnem);
+	const char* reg = GET_REG16(mnem->modrm.reg);
+	const char* rm = modrm_get_mnem16_nos(mnem);
+	MNEM("lds %s, dword %s", reg, rm);
 }
 
 static void xlat(I8086_MNEM* mnem) {
@@ -1374,71 +1429,58 @@ static void xlat(I8086_MNEM* mnem) {
 
 static void esc(I8086_MNEM* mnem) {
 	/* esc (D8-DF R/M reg = XXX) b11010REG */
-	mnem->modrm.byte = FETCH_BYTE();
-	uint8_t esc_opcode = ((mnem->opcode & 7) << 3) | mnem->modrm.reg;
+	fetch_modrm(mnem);
 	const char* rm = modrm_get_mnem16(mnem);
-	printf("esc %02X, %s", esc_opcode, rm);
+	MNEM("esc %s", rm);
 }
 
 static void loopnz(I8086_MNEM* mnem) {
 	/* loop while not zero (E0) b1110000Z */
-	uint8_t disp = FETCH_BYTE();
-#ifdef CONVERT_REL_TO_ABS
+	uint8_t disp = fetch_byte(mnem);
 	uint16_t se = sign_extend8_16(disp);
-	MNEM("loopnz %04X", TO_LABEL_OFFSET(se));
-#else
-	MNEM("loopnz %02X", disp);
-#endif
+	se += mnem->counter;
+	MNEM("loopne %04Xh", se);
 }
 static void loopz(I8086_MNEM* mnem) {
 	/* loop while zero (E1) b1110000Z */
-	uint8_t disp = FETCH_BYTE();
-#ifdef CONVERT_REL_TO_ABS
+	uint8_t disp = fetch_byte(mnem);
 	uint16_t se = sign_extend8_16(disp);
-	MNEM("loopz %04X", TO_LABEL_OFFSET(se));
-#else
-	MNEM("loopz %02X", disp);
-#endif
+	se += mnem->counter;
+	MNEM("loope %04Xh", se);
 }
 static void loop(I8086_MNEM* mnem) {
 	/* loop if CX not zero (E2) b11100010 */
-	uint8_t disp = FETCH_BYTE();
-#ifdef CONVERT_REL_TO_ABS
+	uint8_t disp = fetch_byte(mnem);
 	uint16_t se = sign_extend8_16(disp);
-	MNEM("loop %04X", TO_LABEL_OFFSET(se));
-#else
-	MNEM("loop %02X", disp);
-#endif
+	se += mnem->counter;
+	MNEM("loop %04Xh", se);
 }
 static void jcxz(I8086_MNEM* mnem) {
 	/* jump if CX zero (E3) b11100011 */
-	uint8_t disp = FETCH_BYTE();
-#ifdef CONVERT_REL_TO_ABS
+	uint8_t disp = fetch_byte(mnem);
 	uint16_t se = sign_extend8_16(disp);
-	MNEM("jcxz %04X", TO_LABEL_OFFSET(se));
-#else
-	MNEM("jcxz %02X", disp);
-#endif
+	se += mnem->counter;
+	MNEM("jcxz %04Xh", se);
 }
 
 static void in_accum_imm(I8086_MNEM* mnem) {
 	/* in AL/AX, imm */
-	uint8_t imm = FETCH_BYTE();
+	uint8_t imm = fetch_byte(mnem);
 	if (W) {
-		MNEM("in ax, %02X", imm);
+		MNEM("in ax, %Xh", imm);
 	}
 	else {
-		MNEM("in al, %02X", imm);
+		MNEM("in al, %Xh", imm);
 	}
 }
 static void out_accum_imm(I8086_MNEM* mnem) {
 	/* out imm, AL/AX */
-	uint8_t imm = FETCH_BYTE();
+	uint8_t imm = fetch_byte(mnem);
 	if (W) {
-		MNEM("out %02X, ax", imm);
+		MNEM("out %Xh, ax", imm);
 	}
 	else {
-		MNEM("out %02X, al", imm);
+		MNEM("out %Xh, al", imm);
 	}
 }
 static void in_accum_dx(I8086_MNEM* mnem) {
@@ -1462,16 +1504,16 @@ static void out_accum_dx(I8086_MNEM* mnem) {
 
 static void int3(I8086_MNEM* mnem) {
 	/* interrupt CC b11001100 */
-	MNEM0("int 3");
+	MNEM0("int3");
 }
 
 static void int_(I8086_MNEM* mnem) {
 	/* interrupt CD b11001101 */
 	uint8_t type = 0;
  	if (mnem->opcode & 0x1) {
-		type = FETCH_BYTE();
+		type = fetch_byte(mnem);
 	}
-	MNEM("int %X", type);
+	MNEM("int %Xh", type);
 }
 static void into(I8086_MNEM* mnem) {
 	/* interrupt on overflow (CE) b11001110 */
@@ -1484,25 +1526,23 @@ static void iret(I8086_MNEM* mnem) {
 
 static int rep(I8086_MNEM* mnem) {
 	/* rep/repz/repnz (F2/F3) b1111001Z */
-	if (mnem->opcode & 0x1) {
-		MNEM0("repz ");
-	}
-	else {
-		MNEM0("repnz ");
-	}
-	mnem->opcode = FETCH_BYTE();
+	mnem->internal_flags |= INTERNAL_FLAG_F1;    /* Set F1 */
+	mnem->internal_flags &= ~INTERNAL_FLAG_F1Z;  /* Clr F1Z */
+	mnem->internal_flags |= (mnem->opcode & 0x1); /* Set F1Z */
+
+	mnem->opcode = fetch_byte(mnem);
 	return I8086_DECODE_REQ_CYCLE;
 }
 static int segment_override(I8086_MNEM* mnem) {
 	/* (26/2E/36/3E) b001SR110 */
-	MNEM("%s: ", seg_mnem[SR]);
-	mnem->opcode = FETCH_BYTE();
+	mnem->segment_prefix = SR;
+	mnem->opcode = fetch_byte(mnem);
 	return I8086_DECODE_REQ_CYCLE;
 }
 static int lock(I8086_MNEM* mnem) {
-	/* lock the bus (F0) b11110000 */
+	/* lock the bus (F0/F1) b11110000 */
 	MNEM0("lock ");
-	mnem->opcode = FETCH_BYTE();
+	mnem->opcode = fetch_byte(mnem);
 	return I8086_DECODE_REQ_CYCLE;
 }
 
@@ -1514,7 +1554,7 @@ static void i8086_next(I8086_MNEM* mnem, uint16_t seg, uint16_t offset) {
 
 	mnem->modrm.byte = 0;
 	mnem->segment_prefix = 0xFF;
-	mnem->rep_prefix = 0;
+	mnem->internal_flags = 0;
 	
 	mnem->str[0] = '\0'; 
 	mnem->addressing_str[0] = '\0';
@@ -1522,12 +1562,12 @@ static void i8086_next(I8086_MNEM* mnem, uint16_t seg, uint16_t offset) {
 
 static void i8086_fetch(I8086_MNEM* mnem, uint16_t seg, uint16_t offset) {
 	i8086_next(mnem, seg, offset);
-	mnem->opcode = FETCH_BYTE();
+	mnem->opcode = fetch_byte(mnem);
 }
 
 static void i8086_decode_opcode_80(I8086_MNEM* mnem) {
 	/* 0x80 - 0x83 b100000SW */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	switch (mnem->modrm.reg) {
 		case 0b000: // ADD
 			add_rm_imm(mnem);
@@ -1555,9 +1595,9 @@ static void i8086_decode_opcode_80(I8086_MNEM* mnem) {
 			break;
 	}
 }
-static int i8086_decode_opcode_d0(I8086_MNEM* mnem) {
+static void i8086_decode_opcode_d0(I8086_MNEM* mnem) {
 	/* 0xD0 - 0xD3 b110100VW */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	switch (mnem->modrm.reg) {
 		case 0b000:
 			rol(mnem);
@@ -1577,23 +1617,24 @@ static int i8086_decode_opcode_d0(I8086_MNEM* mnem) {
 		case 0b101:
 			shr(mnem);
 			break;
-		case 0b110:
-			return I8086_DECODE_UNDEFINED;
+		case 0b110: /* 8086 undocumented; Set Minus One (-1) */
+			setmo(mnem);
+			break;
 		case 0b111:
 			sar(mnem);
 			break;
 	}
-	return I8086_DECODE_OK;
 }
-static int i8086_decode_opcode_f6(I8086_MNEM* mnem) {
+static void i8086_decode_opcode_f6(I8086_MNEM* mnem) {
 	/* F6/F7 b1111011W */
-	mnem->modrm.byte = FETCH_BYTE();
+	fetch_modrm(mnem);
 	switch (mnem->modrm.reg) {
 		case 0b000:
 			test_rm_imm(mnem);
 			break;
 		case 0b001:
-			return I8086_DECODE_UNDEFINED;
+			test_rm_imm(mnem);
+			break;
 		case 0b010:
 			not(mnem);
 			break;
@@ -1613,57 +1654,36 @@ static int i8086_decode_opcode_f6(I8086_MNEM* mnem) {
 			idiv_rm(mnem);
 			break;
 	}
-	return I8086_DECODE_OK;
 }
-static int i8086_decode_opcode_fe(I8086_MNEM* mnem) {
+static void i8086_decode_opcode_fe(I8086_MNEM* mnem) {
 	/* FE/FF b1111111W */
-	mnem->modrm.byte = FETCH_BYTE();
-	if (W) {
-		switch (mnem->modrm.reg) {
-			case 0b000:
-				inc_rm(mnem);
-				break;
-			case 0b001:
-				dec_rm(mnem);
-				break;
-			case 0b010:
-				call_intra_indirect(mnem);
-				break;
-			case 0b011:
-				call_inter_indirect(mnem);
-				break;
-			case 0b100:
-				jmp_intra_indirect(mnem);
-				break;
-			case 0b101:
-				jmp_inter_indirect(mnem);
-				break;
-			case 0b110:
-				push_rm(mnem);
-				break;
-			case 0b111:
-				return I8086_DECODE_UNDEFINED;
-		}
+	fetch_modrm(mnem);
+	switch (mnem->modrm.reg) {
+		case 0b000:
+			inc_rm(mnem);
+			break;
+		case 0b001:
+			dec_rm(mnem);
+			break;
+		case 0b010:
+			call_intra_indirect(mnem);
+			break;
+		case 0b011:
+			call_inter_indirect(mnem);
+			break;
+		case 0b100:
+			jmp_intra_indirect(mnem);
+			break;
+		case 0b101:
+			jmp_inter_indirect(mnem);
+			break;
+		case 0b110:
+			push_rm(mnem);
+			break;
+		case 0b111:
+			push_rm(mnem);
+			break;
 	}
-	else {
-		switch (mnem->modrm.reg) {
-			case 0b000:
-				inc_rm(mnem);
-				break;
-			case 0b001:
-				dec_rm(mnem);
-				break;
-
-			case 0b010:
-			case 0b011:
-			case 0b100:
-			case 0b101:
-			case 0b110:
-			case 0b111:
-				return I8086_DECODE_UNDEFINED;
-		}
-	}
-	return I8086_DECODE_OK;
 }
 
 static int i8086_decode_opcode(I8086_MNEM* mnem) {
@@ -2042,7 +2062,8 @@ static int i8086_decode_opcode(I8086_MNEM* mnem) {
 		case 0xD1:
 		case 0xD2:
 		case 0xD3:
-			return i8086_decode_opcode_d0(mnem);
+			i8086_decode_opcode_d0(mnem);
+			break;
 		case 0xD4:
 			aam(mnem);
 			break;
@@ -2108,6 +2129,7 @@ static int i8086_decode_opcode(I8086_MNEM* mnem) {
 			break;
 
 		case 0xF0:
+		case 0xF1:
 			return lock(mnem);
 		case 0xF2:
 		case 0xF3:
@@ -2120,7 +2142,8 @@ static int i8086_decode_opcode(I8086_MNEM* mnem) {
 			break;
 		case 0xF6:
 		case 0xF7:
-			return i8086_decode_opcode_f6(mnem);
+			i8086_decode_opcode_f6(mnem);
+			break;
 		case 0xF8:
 			clc(mnem);
 			break;
@@ -2141,9 +2164,8 @@ static int i8086_decode_opcode(I8086_MNEM* mnem) {
 			break;
 		case 0xFE:
 		case 0xFF:
-			return i8086_decode_opcode_fe(mnem);
-		default:
-			return I8086_DECODE_UNDEFINED;
+			i8086_decode_opcode_fe(mnem);
+			break;
 	}
 	return I8086_DECODE_OK;
 }
@@ -2164,12 +2186,12 @@ static int i8086_decode_instruction(I8086_MNEM* mnem) {
 }
 
 int i8086_mnem(I8086_MNEM* mnem) {
-	i8086_fetch(mnem, CS, mnem->state->ip);
+	i8086_fetch(mnem, mnem->state->segments[SEG_CS], mnem->state->ip);
 	return i8086_decode_instruction(mnem);
 }
 
-int i8086_mnem_at(I8086_MNEM* mnem, uint16_t seg, uint16_t offset) {
-	i8086_fetch(mnem, seg, offset);
+int i8086_mnem_at(I8086_MNEM* mnem, uint16_t segment, uint16_t offset) {
+	i8086_fetch(mnem, segment, offset);
 	return i8086_decode_instruction(mnem);
 }
 

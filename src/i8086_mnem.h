@@ -16,11 +16,11 @@ typedef struct I8086_MNEM {
 	char addressing_str[32];
 	I8086 const* state;     // CPU state
 	uint16_t counter;       // instruction length
+	uint16_t segment;		// CS
 	uint16_t offset;		// IP
-	uint16_t segment;		// SEGMENT
 	uint8_t opcode;         // opcode
 	uint8_t segment_prefix; // segement override index
-	uint8_t rep_prefix;     // rep prefix
+	uint8_t internal_flags; // rep prefix
 	I8086_MOD_RM modrm;     // modrm structure
 
 } I8086_MNEM;
@@ -34,6 +34,8 @@ int i8086_mnem(I8086_MNEM* cpu);
 
 /* Disassemble Opcode at seg:offset */
 int i8086_mnem_at(I8086_MNEM* mnem, uint16_t seg, uint16_t offset);
+
+void i8086_mnem_get_modrm(I8086_MNEM* mnem, char* buf, const char* fmt);
 
 #ifdef __cplusplus
 };
