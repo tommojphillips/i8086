@@ -23,6 +23,9 @@ typedef struct I8086_MNEM {
 	uint8_t internal_flags; // rep prefix
 	I8086_MOD_RM modrm;     // modrm structure
 
+	uint16_t step_over_has_target;
+	uint16_t step_over_segment;
+	uint16_t step_over_offset;
 } I8086_MNEM;
 
 #ifdef __cplusplus
@@ -36,6 +39,8 @@ int i8086_mnem(I8086_MNEM* cpu);
 int i8086_mnem_at(I8086_MNEM* mnem, uint16_t seg, uint16_t offset);
 
 void i8086_mnem_get_modrm(I8086_MNEM* mnem, char* buf, const char* fmt);
+
+uint32_t i8086_mnem_get_step_over_target(I8086_MNEM* mnem);
 
 #ifdef __cplusplus
 };

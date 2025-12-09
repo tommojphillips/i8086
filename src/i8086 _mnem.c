@@ -19,8 +19,59 @@
  /* define IP as counter */
 #define IP  (mnem->offset + mnem->counter)
 
-/* Get 20bit address SEG:ADDR */
-#define PHYS_ADDRESS(seg, offset) ((((uint20_t)seg << 4) + ((offset) & 0xFFFF)) & 0xFFFFF)
+ /* Jump condition */
+#define CCCC (mnem->opcode & 0x0F)
+#define JCC_JO  0b0000
+#define JCC_JNO 0b0001
+#define JCC_JC  0b0010
+#define JCC_JNC 0b0011
+#define JCC_JZ  0b0100
+#define JCC_JNZ 0b0101
+#define JCC_JBE 0b0110
+#define JCC_JA  0b0111
+#define JCC_JS  0b1000
+#define JCC_JNS 0b1001
+#define JCC_JPE 0b1010
+#define JCC_JPO 0b1011
+#define JCC_JL  0b1100
+#define JCC_JGE 0b1101
+#define JCC_JLE 0b1110
+#define JCC_JG  0b1111
+
+#define SF mnem->state->status.sf
+#define CF mnem->state->status.cf
+#define ZF mnem->state->status.zf
+#define PF mnem->state->status.pf
+#define OF mnem->state->status.of
+#define AF mnem->state->status.af
+#define DF mnem->state->status.df
+#define TF mnem->state->status.tf
+#define IF mnem->state->status.in
+
+#define AL mnem->state->registers[REG_AL].l   // accum low byte 8bit register
+#define AH mnem->state->registers[REG_AL].h   // accum high byte 8bit register
+#define AX mnem->state->registers[REG_AX].r16 // accum 16bit register
+
+#define CL mnem->state->registers[REG_CL].l   // count low byte 8bit register
+#define CH mnem->state->registers[REG_CL].h   // count high byte 8bit register
+#define CX mnem->state->registers[REG_CX].r16 // count 16bit register
+
+#define DL mnem->state->registers[REG_DL].l   // data low byte 8bit register
+#define DH mnem->state->registers[REG_DL].h   // data high byte 8bit register
+#define DX mnem->state->registers[REG_DX].r16 // data 16bit register
+
+#define BL mnem->state->registers[REG_BL].l   // base low byte 8bit register
+#define BH mnem->state->registers[REG_BL].h   // base high byte 8bit register
+#define BX mnem->state->registers[REG_BX].r16 // base 16bit register
+
+#define SP mnem->state->registers[REG_SP].r16 // stack pointer 16bit register
+#define BP mnem->state->registers[REG_BP].r16 // base pointer 16bit register
+#define SI mnem->state->registers[REG_SI].r16 // src index 16bit register
+#define DI mnem->state->registers[REG_DI].r16 // dest index 16bit register
+
+#define ES mnem->state->segments[SEG_ES] // extra segment register
+#define SS mnem->state->segments[SEG_SS] // stack segment register
+#define DS mnem->state->segments[SEG_DS] // data segment register
 
 /* Get 8bit register mnemonic */
 #define GET_REG8(reg)      reg8_mnem[reg & 7]
@@ -72,11 +123,86 @@ static const char* seg_mnem[] = {
 	"es", "cs", "ss", "ds"
 };
 
-static uint8_t read_byte(I8086_MNEM* mnem, uint16_t segment, uint16_t offset) {
-	return mnem->state->funcs.read_mem_byte(PHYS_ADDRESS(segment, offset));
+/* 8bit r/m operand */
+typedef struct {
+	uint8_t is_reg;
+	union {
+		uint8_t reg_index;
+		struct {
+			uint16_t segment;
+			uint16_t offset;
+		} mem;
+	} u;
+} OPERAND8;
+
+/* 16bit r/m operand */
+typedef struct {
+	uint8_t is_reg;
+	union {
+		uint8_t reg_index;
+		struct {
+			uint16_t segment;
+			uint16_t offset;
+		} mem;
+	} u;
+} OPERAND16;
+
+static int jump_condition(I8086_MNEM* mnem) {
+	switch (CCCC) {
+		case JCC_JO:
+			if (OF) return 1;
+			break;
+		case JCC_JNO:
+			if (!OF) return 1;
+			break;
+		case JCC_JC:
+			if (CF) return 1;
+			break;
+		case JCC_JNC:
+			if (!CF) return 1;
+			break;
+		case JCC_JZ:
+			if (ZF) return 1;
+			break;
+		case JCC_JNZ:
+			if (!ZF) return 1;
+			break;
+		case JCC_JBE:
+			if (CF || ZF) return 1;
+			break;
+		case JCC_JA:
+			if (!CF && !ZF) return 1;
+			break;
+		case JCC_JS:
+			if (SF) return 1;
+			break;
+		case JCC_JNS:
+			if (!SF) return 1;
+			break;
+		case JCC_JPE:
+			if (PF) return 1;
+			break;
+		case JCC_JPO:
+			if (!PF) return 1;
+			break;
+		case JCC_JL:
+			if (SF != OF) return 1;
+			break;
+		case JCC_JGE:
+			if (SF == OF) return 1;
+			break;
+		case JCC_JLE:
+			if (ZF || SF != OF) return 1;
+			break;
+		case JCC_JG:
+			if (!ZF && SF == OF) return 1;
+			break;
+	}
+	return 0;
 }
-static void write_byte(I8086_MNEM* mnem, uint16_t segment, uint16_t offset, uint8_t value) {
-	mnem->state->funcs.write_mem_byte(PHYS_ADDRESS(segment, offset), value);
+
+static uint8_t read_byte(I8086_MNEM* mnem, uint16_t segment, uint16_t offset) {
+	return mnem->state->funcs.read_mem_byte(i8086_get_physical_address(segment, offset));
 }
 static uint8_t fetch_byte(I8086_MNEM* mnem) {
 	uint8_t v = read_byte(mnem, CS, IP);
@@ -85,16 +211,138 @@ static uint8_t fetch_byte(I8086_MNEM* mnem) {
 }
 
 static uint16_t read_word(I8086_MNEM* mnem, uint16_t segment, uint16_t offset) {
-	return (((uint16_t)mnem->state->funcs.read_mem_byte(PHYS_ADDRESS(segment, offset + 1)) << 8) | mnem->state->funcs.read_mem_byte(PHYS_ADDRESS(segment, offset)));
-}
-static void write_word(I8086_MNEM* mnem, uint16_t segment, uint16_t offset, uint16_t value) {
-	mnem->state->funcs.write_mem_byte(PHYS_ADDRESS(segment, offset), value & 0xFF);
-	mnem->state->funcs.write_mem_byte(PHYS_ADDRESS(segment, offset + 1), (value >> 8) & 0xFF);
+	return (((uint16_t)mnem->state->funcs.read_mem_byte(i8086_get_physical_address(segment, offset + 1)) << 8) | mnem->state->funcs.read_mem_byte(i8086_get_physical_address(segment, offset)));
 }
 static uint16_t fetch_word(I8086_MNEM* mnem) {
 	uint16_t v = read_word(mnem, CS, IP);
 	mnem->counter += 2;
 	return v;
+}
+
+static uint16_t modrm_get_base_offset(I8086_MNEM* mnem) {
+	switch (mnem->modrm.rm) {
+		case 0b000: // base rel indexed - BX + SI
+			return (BX + SI);
+		case 0b001: // base rel indexed - BX + DI
+			return (BX + DI);
+		case 0b010: // base rel indexed stack - BP + SI
+			return (BP + SI);
+		case 0b011: // base rel indexed stack - BP + DI
+			return (BP + DI);
+		case 0b100: // implied SI
+			return SI;
+		case 0b101: // implied DI
+			return DI;
+		case 0b110: // implied BP
+			return BP;
+		case 0b111: // implied BX
+			return BX;
+	}
+	return 0;
+}
+static uint16_t modrm_get_segment(I8086_MNEM* mnem) {
+	if (mnem->segment_prefix != 0xFF) {
+		return mnem->state->segments[mnem->segment_prefix & 0x3]; // CS/DS/ES/SS override
+	}
+	else {
+		// mod = 00 special case for r/m=110 -> [disp16] uses DS
+		if (mnem->modrm.mod == 0b00 && mnem->modrm.rm == 0b110) {
+			return mnem->state->segments[SEG_DS];
+		}
+		else {
+			switch (mnem->modrm.rm) {
+				case 0b010: // [BP+SI]
+				case 0b011: // [BP+DI]
+				case 0b110: // [BP] (mod != 00)
+					return mnem->state->segments[SEG_SS]; // defaults to SS
+				default:
+					return mnem->state->segments[SEG_DS]; // everything else defaults to DS
+			}
+		}
+	}
+}
+static uint16_t modrm_get_offset(I8086_MNEM* mnem) {
+	switch (mnem->modrm.mod) {
+		case 0b00:
+			if (mnem->modrm.rm == 0b110) {
+				return fetch_word(mnem);
+			}
+			else {
+				return modrm_get_base_offset(mnem);
+			}
+			break;
+
+		case 0b01: {
+			int8_t disp8 = (int8_t)fetch_byte(mnem);
+			return (modrm_get_base_offset(mnem) + disp8) & 0xFFFF;
+		} break;
+
+		case 0b10: {
+			int16_t disp16 = (int16_t)fetch_word(mnem);
+			return (modrm_get_base_offset(mnem) + disp16) & 0xFFFF;
+		} break;
+
+		// case 0b11: register mode never calls this
+		default:
+		case 0b11:
+			return 0;
+	}
+}
+
+static uint8_t reg8_read(I8086_MNEM* mnem, uint8_t reg) {
+	if (reg & 0x4) {
+		return mnem->state->registers[reg & 0x3].h;
+	}
+	else {
+		return mnem->state->registers[reg & 0x3].l;
+	}
+}
+static uint16_t reg16_read(I8086_MNEM* mnem, uint8_t reg) {
+	return mnem->state->registers[reg & 0x7].r16;
+}
+
+static OPERAND16 modrm_get_op16(I8086_MNEM* mnem) {
+	OPERAND16 op16 = { 0 };
+	if (mnem->modrm.mod == 0b11) {
+		op16.is_reg = 1;
+		op16.u.reg_index = mnem->modrm.rm;
+	}
+	else {
+		op16.is_reg = 0;
+		op16.u.mem.segment = modrm_get_segment(mnem);
+		op16.u.mem.offset = modrm_get_offset(mnem);
+	}
+	return op16;
+}
+static uint16_t op16_read(I8086_MNEM* mnem, OPERAND16 op16) {
+	if (op16.is_reg) {
+		return reg16_read(mnem, op16.u.reg_index);
+	}
+	else {
+		return read_word(mnem, op16.u.mem.segment, op16.u.mem.offset);
+	}
+}
+
+static OPERAND8 modrm_get_op8(I8086_MNEM* mnem) {
+	OPERAND8 op8 = { 0 };
+	if (mnem->modrm.mod == 0b11) {
+		op8.is_reg = 1;
+		op8.u.reg_index = mnem->modrm.rm;
+	}
+	else {
+		op8.is_reg = 0;
+		op8.u.mem.segment = modrm_get_segment(mnem);
+		op8.u.mem.offset = modrm_get_offset(mnem);
+	}
+	return op8;
+}
+static uint8_t op8_read(I8086_MNEM* mnem, OPERAND8 op8) {
+	if (op8.is_reg) {
+		return reg8_read(mnem, op8.u.reg_index);
+	}
+	else {
+		return read_byte(mnem, op8.u.mem.segment, op8.u.mem.offset);
+	}
 }
 
 /* Swap pointers if 'D' is set bXXXXXXDX */
@@ -243,6 +491,12 @@ static const char* modrm_get_mnem8(I8086_MNEM* mnem) {
 
 static void fetch_modrm(I8086_MNEM* mnem) {
 	mnem->modrm.byte = fetch_byte(mnem);
+}
+
+static void set_step_over_target(I8086_MNEM* mnem, uint16_t segment, uint16_t address) {
+	mnem->step_over_has_target = 1;
+	mnem->step_over_segment = segment;
+	mnem->step_over_offset = address;
 }
 
 /* Opcodes */
@@ -830,6 +1084,8 @@ static void lahf(I8086_MNEM* mnem) {
 static void hlt(I8086_MNEM* mnem) {
 	/* Halt mnem (F4) b11110100 */
 	MNEM0("hlt");
+
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter - 1);
 }
 static void cmc(I8086_MNEM* mnem) {
 	// Complement carry flag (F5) b11110101
@@ -1023,54 +1279,58 @@ static void jcc(I8086_MNEM* mnem) {
 	imm += mnem->counter;
 
 	switch (CCCC) {
-		case I8086_JCC_JO:
+		case JCC_JO:
 			MNEM("jo %04Xh", imm);
 			break;
-		case I8086_JCC_JNO:
+		case JCC_JNO:
 			MNEM("jno %04Xh", imm);
 			break;
-		case I8086_JCC_JC:
+		case JCC_JC:
 			MNEM("jb %04Xh", imm);
 			break;
-		case I8086_JCC_JNC:
+		case JCC_JNC:
 			MNEM("jnb %04Xh", imm);
 			break;
-		case I8086_JCC_JZ:
+		case JCC_JZ:
 			MNEM("jz %04Xh", imm);
 			break;
-		case I8086_JCC_JNZ:
+		case JCC_JNZ:
 			MNEM("jnz %04Xh", imm);
 			break;
-		case I8086_JCC_JBE:
+		case JCC_JBE:
 			MNEM("jbe %04Xh", imm);
 			break;
-		case I8086_JCC_JA:
+		case JCC_JA:
 			MNEM("jnbe %04Xh", imm);
 			break;
-		case I8086_JCC_JS:
+		case JCC_JS:
 			MNEM("js %04Xh", imm);
 			break;
-		case I8086_JCC_JNS:
+		case JCC_JNS:
 			MNEM("jns %04Xh", imm);
 			break;
-		case I8086_JCC_JPE:
+		case JCC_JPE:
 			MNEM("jp %04Xh", imm);
 			break;
-		case I8086_JCC_JPO:
+		case JCC_JPO:
 			MNEM("jnp %04Xh", imm);
 			break;
-		case I8086_JCC_JL:
+		case JCC_JL:
 			MNEM("jl %04Xh", imm);
 			break;
-		case I8086_JCC_JGE:
+		case JCC_JGE:
 			MNEM("jnl %04Xh", imm);
 			break;
-		case I8086_JCC_JLE:
+		case JCC_JLE:
 			MNEM("jle %04Xh", imm);
 			break;
-		case I8086_JCC_JG:
+		case JCC_JG:
 			MNEM("jnle %04Xh", imm);
 			break;
+	}
+
+	if (jump_condition(mnem)) {
+		set_step_over_target(mnem, mnem->segment, mnem->offset + imm);
 	}
 }
 static void jmp_intra_direct(I8086_MNEM* mnem) {
@@ -1078,12 +1338,16 @@ static void jmp_intra_direct(I8086_MNEM* mnem) {
 	uint16_t imm = fetch_word(mnem);
 	imm += mnem->counter;
 	MNEM("jmp %04Xh", imm);
+
+	set_step_over_target(mnem, mnem->segment, mnem->offset +  imm);
 }
 static void jmp_inter_direct(I8086_MNEM* mnem) {
 	/* Jump addr:seg (EA) b11101010 */
 	uint16_t imm = fetch_word(mnem);
 	uint16_t imm2 = fetch_word(mnem);
 	MNEM("jmpf %04Xh:%04Xh", imm2, imm);
+
+	set_step_over_target(mnem, imm2, imm);
 }
 static void jmp_intra_direct_short(I8086_MNEM* mnem) {
 	/* Jump near short (EB) b11101011 */
@@ -1091,12 +1355,17 @@ static void jmp_intra_direct_short(I8086_MNEM* mnem) {
 	uint16_t se = sign_extend8_16(imm);
 	se += mnem->counter;
 	MNEM("jmp %04Xh", se);
+
+	set_step_over_target(mnem, mnem->segment, mnem->offset + se);
 }
 static void jmp_intra_indirect(I8086_MNEM* mnem) {
 	/* Jump near indirect (FE/FF, R/M reg = 100) b1111111W */
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		MNEM("jmp %s", rm);
+
+		OPERAND16 op16 = modrm_get_op16(mnem);
+		set_step_over_target(mnem, mnem->segment, op16_read(mnem, op16));
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
@@ -1108,6 +1377,10 @@ static void jmp_inter_indirect(I8086_MNEM* mnem) {
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		MNEM("jmpf %s", rm);
+
+		uint16_t segment = modrm_get_segment(mnem);
+		uint16_t offset = modrm_get_offset(mnem);
+		set_step_over_target(mnem, read_word(mnem, segment, offset + 2), read_word(mnem, segment, offset));
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
@@ -1155,22 +1428,30 @@ static void ret_intra_add_imm(I8086_MNEM* mnem) {
 	   undocumented* C0 decodes identically to C2 */
 	uint16_t imm = fetch_word(mnem);
 	MNEM("retn %Xh", imm);
+
+	set_step_over_target(mnem, mnem->segment, read_word(mnem, SS, SP));
 }
 static void ret_intra(I8086_MNEM* mnem) {
 	/* Ret (C3) b11000011 
 	undocumented* C1 decodes identically to C3 */
 	MNEM0("retn");
+
+	set_step_over_target(mnem, mnem->segment, read_word(mnem, SS, SP));
 }
 static void ret_inter_add_imm(I8086_MNEM* mnem) {
 	/* Ret imm16 (CA) b11001010 
 	undocumented* C8 decodes identically to CA */
 	uint16_t imm = fetch_word(mnem);
 	MNEM("retf %Xh", imm);
+
+	set_step_over_target(mnem, read_word(mnem, SS, SP + 2), read_word(mnem, SS, SP));
 }
 static void ret_inter(I8086_MNEM* mnem) {
 	/* Ret (CB) b11001011 
 	undocumented* C9 decodes identically to CB */
 	MNEM0("retf");
+
+	set_step_over_target(mnem, read_word(mnem, SS, SP + 2), read_word(mnem, SS, SP));
 }
 
 static void mov_rm_imm(I8086_MNEM* mnem) {
@@ -1461,6 +1742,10 @@ static void jcxz(I8086_MNEM* mnem) {
 	uint16_t se = sign_extend8_16(disp);
 	se += mnem->counter;
 	MNEM("jcxz %04Xh", se);
+
+	if (CX == 0) {
+		set_step_over_target(mnem, mnem->segment, mnem->offset + se);
+	}
 }
 
 static void in_accum_imm(I8086_MNEM* mnem) {
@@ -1522,6 +1807,8 @@ static void into(I8086_MNEM* mnem) {
 static void iret(I8086_MNEM* mnem) {
 	/* interrupt on return (CF) b11001111 */
 	MNEM0("iret");
+
+	set_step_over_target(mnem, read_word(mnem, SS, SP + 2), read_word(mnem, SS, SP));
 }
 
 static int rep(I8086_MNEM* mnem) {
@@ -1558,6 +1845,10 @@ static void i8086_next(I8086_MNEM* mnem, uint16_t seg, uint16_t offset) {
 	
 	mnem->str[0] = '\0'; 
 	mnem->addressing_str[0] = '\0';
+
+	mnem->step_over_has_target = 0;
+	mnem->step_over_segment = 0;
+	mnem->step_over_offset = 0;
 }
 
 static void i8086_fetch(I8086_MNEM* mnem, uint16_t seg, uint16_t offset) {
@@ -2193,6 +2484,15 @@ int i8086_mnem(I8086_MNEM* mnem) {
 int i8086_mnem_at(I8086_MNEM* mnem, uint16_t segment, uint16_t offset) {
 	i8086_fetch(mnem, segment, offset);
 	return i8086_decode_instruction(mnem);
+}
+
+uint32_t i8086_mnem_get_step_over_target(I8086_MNEM* mnem) {
+	if (mnem->step_over_has_target) {
+		return i8086_get_physical_address(mnem->step_over_segment, mnem->step_over_offset);
+	}
+	else {
+		return i8086_get_physical_address(mnem->segment, mnem->offset + mnem->counter);
+	}
 }
 
 #endif
