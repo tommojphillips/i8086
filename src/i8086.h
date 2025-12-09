@@ -38,24 +38,6 @@
 #define I8086_DECODE_REQ_CYCLE 1 /* prefix bytes and string operations require multiple decode cycles */
 #define I8086_DECODE_UNDEFINED 2 /* undefined instruction */
 
- /* Jump condition */
-#define I8086_JCC_JO  0b0000
-#define I8086_JCC_JNO 0b0001
-#define I8086_JCC_JC  0b0010
-#define I8086_JCC_JNC 0b0011
-#define I8086_JCC_JZ  0b0100
-#define I8086_JCC_JNZ 0b0101
-#define I8086_JCC_JBE 0b0110
-#define I8086_JCC_JA  0b0111
-#define I8086_JCC_JS  0b1000
-#define I8086_JCC_JNS 0b1001
-#define I8086_JCC_JPE 0b1010
-#define I8086_JCC_JPO 0b1011
-#define I8086_JCC_JL  0b1100
-#define I8086_JCC_JGE 0b1101
-#define I8086_JCC_JLE 0b1110
-#define I8086_JCC_JG  0b1111
-
 //#define I8086_ENABLE_INTERRUPT_HOOKS
 
 /* 20bit address */
@@ -120,11 +102,9 @@ typedef struct I8086_MOD_RM {
 typedef struct I8086_FUNCS {
 	uint8_t(*read_mem_byte)(uint20_t);  // read mem byte
 	uint8_t(*read_io_byte)(uint16_t);   // read io byte
-	uint16_t(*read_io_word)(uint16_t);  // read io word
 
 	void(*write_mem_byte)(uint20_t, uint8_t);  // write mem byte
 	void(*write_io_byte)(uint16_t, uint8_t);   // write io byte
-	void(*write_io_word)(uint16_t, uint16_t);  // write io word	
 
 } I8086_FUNCS;
 
@@ -199,6 +179,8 @@ void i8086_intr(I8086* cpu, uint8_t type);
 /* request non maskable interrupt
 	cpu:  the cpu instance */
 void i8086_nmi(I8086* cpu);
+
+uint20_t i8086_get_physical_address(uint16_t segment, uint16_t address);
 
 #ifdef I8086_ENABLE_INTERRUPT_HOOKS
 /* setup an interrupt callback on type 

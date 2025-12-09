@@ -71,11 +71,24 @@
 // register direction (reg <- r/m) or (r/m <- reg)
 #define D (cpu->opcode & 0x2) 
 
-// jump condition
+ /* Jump condition */
 #define CCCC (cpu->opcode & 0x0F)
-
-/* Get 20bit address SEG:ADDR */
-#define PHYS_ADDRESS(seg, offset) ((((uint20_t)seg << 4) + ((offset) & 0xFFFF)) & 0xFFFFF)
+#define JCC_JO  0b0000
+#define JCC_JNO 0b0001
+#define JCC_JC  0b0010
+#define JCC_JNC 0b0011
+#define JCC_JZ  0b0100
+#define JCC_JNZ 0b0101
+#define JCC_JBE 0b0110
+#define JCC_JA  0b0111
+#define JCC_JS  0b1000
+#define JCC_JNS 0b1001
+#define JCC_JPE 0b1010
+#define JCC_JPO 0b1011
+#define JCC_JL  0b1100
+#define JCC_JGE 0b1101
+#define JCC_JLE 0b1110
+#define JCC_JG  0b1111
 
 /* Get default or override segment index */
 #define GET_SEG_OVERRIDE(seg) ((cpu->segment_prefix != 0xFF) ? cpu->segment_prefix : seg)
@@ -83,14 +96,8 @@
 /* Get default or override segment register */
 #define SEG_DEFAULT_OR_OVERRIDE(seg) (cpu->segments[GET_SEG_OVERRIDE(seg)])
 
-/* Read byte from IO port word */
-#define READ_IO_WORD(port) cpu->funcs.read_io_word(port)
-
 /* Read byte from IO port */
 #define READ_IO_BYTE(port) cpu->funcs.read_io_byte(port)
-
-/* Write byte to IO port */
-#define WRITE_IO_WORD(port,value) cpu->funcs.write_io_word(port, value)
 
 /* Write byte to IO port */
 #define WRITE_IO_BYTE(port,value) cpu->funcs.write_io_byte(port, value)
@@ -149,10 +156,10 @@ static uint16_t op16_read(I8086* cpu, OPERAND16 op16);
 static void op16_write(I8086* cpu, OPERAND16 op16, uint16_t v);
 
 static uint8_t read_byte(I8086* cpu, uint16_t segment, uint16_t offset) {
-	return cpu->funcs.read_mem_byte(PHYS_ADDRESS(segment, offset));
+	return cpu->funcs.read_mem_byte(i8086_get_physical_address(segment, offset));
 }
 static void write_byte(I8086* cpu, uint16_t segment, uint16_t offset, uint8_t value) {
-	cpu->funcs.write_mem_byte(PHYS_ADDRESS(segment, offset), value);
+	cpu->funcs.write_mem_byte(i8086_get_physical_address(segment, offset), value);
 }
 static uint8_t fetch_byte(I8086* cpu) {
 	uint8_t v = read_byte(cpu, CS, IP);
@@ -162,11 +169,11 @@ static uint8_t fetch_byte(I8086* cpu) {
 }
 
 static uint16_t read_word(I8086* cpu, uint16_t segment, uint16_t offset) {
-	return (((uint16_t)cpu->funcs.read_mem_byte(PHYS_ADDRESS(segment, offset + 1)) << 8) | cpu->funcs.read_mem_byte(PHYS_ADDRESS(segment, offset)));
+	return (((uint16_t)cpu->funcs.read_mem_byte(i8086_get_physical_address(segment, offset + 1)) << 8) | cpu->funcs.read_mem_byte(i8086_get_physical_address(segment, offset)));
 }
 static void write_word(I8086* cpu, uint16_t segment, uint16_t offset, uint16_t value) {
-	cpu->funcs.write_mem_byte(PHYS_ADDRESS(segment, offset), value & 0xFF);
-	cpu->funcs.write_mem_byte(PHYS_ADDRESS(segment, offset + 1), (value >> 8) & 0xFF);
+	cpu->funcs.write_mem_byte(i8086_get_physical_address(segment, offset), value & 0xFF);
+	cpu->funcs.write_mem_byte(i8086_get_physical_address(segment, offset + 1), (value >> 8) & 0xFF);
 }
 static uint16_t fetch_word(I8086* cpu) {
 	uint16_t v = read_word(cpu, CS, IP);
@@ -463,7 +470,7 @@ static OPERAND16 mem_get_op16(uint16_t segment, uint16_t offset) {
 }
 static uint16_t op16_read(I8086* cpu, OPERAND16 op16) {
 	if (op16.is_reg) {
-		return cpu->registers[op16.u.reg_index].r16;
+		return reg16_read(cpu, op16.u.reg_index);
 	}
 	else {
 		return read_word(cpu, op16.u.mem.segment, op16.u.mem.offset);
@@ -471,7 +478,7 @@ static uint16_t op16_read(I8086* cpu, OPERAND16 op16) {
 }
 static void op16_write(I8086* cpu, OPERAND16 op16, uint16_t v) {
 	if (op16.is_reg) {
-		cpu->registers[op16.u.reg_index].r16 = v;
+		reg16_write(cpu, op16.u.reg_index, v);
 	}
 	else {
 		write_word(cpu, op16.u.mem.segment, op16.u.mem.offset, v);
@@ -1075,7 +1082,7 @@ static void push_reg(I8086* cpu) {
 		This is so when pushing SP the NEW SP is pushed. */
 
 	SP -= 2;
-	write_word(cpu, SS, SP, cpu->registers[cpu->opcode & 7].r16);
+	write_word(cpu, SS, SP, reg16_read(cpu, cpu->opcode));
 	TRANSFERS(1);
 	CYCLES(11);
 }
@@ -1087,7 +1094,7 @@ static void pop_reg(I8086* cpu) {
 
 	uint16_t tmp = read_word(cpu, SS, SP);
 	SP += 2;
-	cpu->registers[cpu->opcode & 7].r16 = tmp;
+	reg16_write(cpu, cpu->opcode, tmp);
 	TRANSFERS(1);
 	CYCLES(8);
 }
@@ -1532,52 +1539,52 @@ static void setmo(I8086* cpu) {
 
 static int jump_condition(I8086* cpu) {
 	switch (CCCC) {
-		case I8086_JCC_JO:
+		case JCC_JO:
 			if (OF) return 1;
 			break;
-		case I8086_JCC_JNO:
+		case JCC_JNO:
 			if (!OF) return 1;
 			break;
-		case I8086_JCC_JC:
+		case JCC_JC:
 			if (CF) return 1;
 			break;
-		case I8086_JCC_JNC:
+		case JCC_JNC:
 			if (!CF) return 1;
 			break;
-		case I8086_JCC_JZ:
+		case JCC_JZ:
 			if (ZF) return 1;
 			break;
-		case I8086_JCC_JNZ:
+		case JCC_JNZ:
 			if (!ZF) return 1;
 			break;
-		case I8086_JCC_JBE:
+		case JCC_JBE:
 			if (CF || ZF) return 1;
 			break;
-		case I8086_JCC_JA:
+		case JCC_JA:
 			if (!CF && !ZF) return 1;
 			break;
-		case I8086_JCC_JS:
+		case JCC_JS:
 			if (SF) return 1;
 			break;
-		case I8086_JCC_JNS:
+		case JCC_JNS:
 			if (!SF) return 1;
 			break;
-		case I8086_JCC_JPE:
+		case JCC_JPE:
 			if (PF) return 1;
 			break;
-		case I8086_JCC_JPO:
+		case JCC_JPO:
 			if (!PF) return 1;
 			break;
-		case I8086_JCC_JL:
+		case JCC_JL:
 			if (SF != OF) return 1;
 			break;
-		case I8086_JCC_JGE:
+		case JCC_JGE:
 			if (SF == OF) return 1;
 			break;
-		case I8086_JCC_JLE:
+		case JCC_JLE:
 			if (ZF || SF != OF) return 1;
 			break;
-		case I8086_JCC_JG:
+		case JCC_JG:
 			if (!ZF && SF == OF) return 1;
 			break;
 	}
@@ -2377,7 +2384,7 @@ static void in_accum_imm(I8086* cpu) {
 	/* in AL/AX, imm */
 	uint8_t imm = fetch_byte(cpu);
 	if (W) {
-		AX = READ_IO_WORD(imm);
+		AX = (READ_IO_BYTE(imm) | (READ_IO_BYTE(imm + 1) << 8));
 	}
 	else {
 		AL = READ_IO_BYTE(imm);
@@ -2389,7 +2396,8 @@ static void out_accum_imm(I8086* cpu) {
 	/* out imm, AL/AX */
 	uint8_t imm = fetch_byte(cpu);
 	if (W) {
-		WRITE_IO_WORD(imm, AX);
+		WRITE_IO_BYTE(imm, AL);
+		WRITE_IO_BYTE(imm + 1, AH);
 	}
 	else {
 		WRITE_IO_BYTE(imm, AL);
@@ -2400,7 +2408,7 @@ static void out_accum_imm(I8086* cpu) {
 static void in_accum_dx(I8086* cpu) {
 	/* in AL/AX, DX */
 	if (W) {
-		AX = READ_IO_WORD(DX);
+		AX = (READ_IO_BYTE(DX) | (READ_IO_BYTE(DX + 1) << 8));
 	}
 	else {
 		AL = READ_IO_BYTE(DX);
@@ -2411,7 +2419,8 @@ static void in_accum_dx(I8086* cpu) {
 static void out_accum_dx(I8086* cpu) {
 	/* out DX, AL/AX */
 	if (W) {
-		WRITE_IO_WORD(DX, AX);
+		WRITE_IO_BYTE(DX, AL);
+		WRITE_IO_BYTE(DX + 1, AH);
 	}
 	else {
 		WRITE_IO_BYTE(DX, AL);
@@ -3101,8 +3110,6 @@ void i8086_init(I8086* cpu) {
 	cpu->funcs.write_mem_byte = NULL;
 	cpu->funcs.read_io_byte = NULL;
 	cpu->funcs.write_io_byte = NULL;
-	cpu->funcs.read_io_word = NULL;
-	cpu->funcs.write_io_word = NULL;
 
 #ifdef I8086_ENABLE_INTERRUPT_HOOKS
 	cpu->int_cb_count = 0;
@@ -3189,3 +3196,7 @@ I8086_INT_CB i8086_find_interrupt_cb(I8086* cpu, uint8_t type) {
 	return NULL;
 }
 #endif
+
+uint20_t i8086_get_physical_address(uint16_t segment, uint16_t address) {
+	return (((uint20_t)segment << 4) + address) & 0xFFFFF;
+}
