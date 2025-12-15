@@ -112,6 +112,9 @@
 #define MNEM_F(mem, x, ...) sprintf(mem+strlen(mem), x, __VA_ARGS__)
 #define MNEM(x, ...) MNEM_F(mnem->str, x, __VA_ARGS__)
 
+/* Get default or override segment index */
+#define GET_SEG_OVERRIDE(seg) ((mnem->segment_prefix != 0xFF) ? mnem->segment_prefix : seg)
+
 static const char* reg8_mnem[] = {
 	"al", "cl", "dl", "bl", "ah", "ch", "dh", "bh"
 };
@@ -123,29 +126,21 @@ static const char* seg_mnem[] = {
 	"es", "cs", "ss", "ds"
 };
 
-/* 8bit r/m operand */
-typedef struct {
-	uint8_t is_reg;
-	union {
-		uint8_t reg_index;
-		struct {
-			uint16_t segment;
-			uint16_t offset;
-		} mem;
-	} u;
-} OPERAND8;
-
-/* 16bit r/m operand */
-typedef struct {
-	uint8_t is_reg;
-	union {
-		uint8_t reg_index;
-		struct {
-			uint16_t segment;
-			uint16_t offset;
-		} mem;
-	} u;
-} OPERAND16;
+static void set_ea(I8086_MNEM* mnem, uint16_t segment, uint16_t address) {
+	mnem->has_ea = 1;
+	mnem->ea_segment = segment;
+	mnem->ea_offset = address;
+}
+static void set_step_over_target(I8086_MNEM* mnem, uint16_t segment, uint16_t address) {
+	mnem->step_over_has_target = 1;
+	mnem->step_over_segment = segment;
+	mnem->step_over_offset = address;
+}
+static void set_step_into_target(I8086_MNEM* mnem, uint16_t segment, uint16_t address) {
+	mnem->step_into_has_target = 1;
+	mnem->step_into_segment = segment;
+	mnem->step_into_offset = address;
+}
 
 static int jump_condition(I8086_MNEM* mnem) {
 	switch (CCCC) {
@@ -219,6 +214,37 @@ static uint16_t fetch_word(I8086_MNEM* mnem) {
 	return v;
 }
 
+static void get_signed_disp(char* buf, int disp) {
+	if (disp < 0) {
+		MNEM_F(buf, "-%Xh", -disp);
+	}
+	else {
+		MNEM_F(buf, "+%Xh", disp);
+	}
+}
+static void get_unsigned_disp(char* buf, int disp) {
+	MNEM_F(buf, "%Xh", disp);
+}
+
+static int modrm_get_segment_index(I8086_MNEM* mnem) {
+	if (mnem->segment_prefix != 0xFF) {
+		return mnem->segment_prefix; // CS/DS/ES/SS override
+	}
+
+	// mod = 00 special case for r/m=110 -> [disp16] uses DS
+	if (mnem->modrm.mod == 0b00 && mnem->modrm.rm == 0b110) {
+		return SEG_DS;
+	}
+
+	switch (mnem->modrm.rm) {
+		case 0b010: // [BP+SI]
+		case 0b011: // [BP+DI]
+		case 0b110: // [BP] (mod != 00)
+			return SEG_SS;  // defaults to SS
+		default:
+			return SEG_DS;  // everything else defaults to DS
+	}
+}
 static uint16_t modrm_get_base_offset(I8086_MNEM* mnem) {
 	switch (mnem->modrm.rm) {
 		case 0b000: // base rel indexed - BX + SI
@@ -241,120 +267,10 @@ static uint16_t modrm_get_base_offset(I8086_MNEM* mnem) {
 	return 0;
 }
 static uint16_t modrm_get_segment(I8086_MNEM* mnem) {
-	if (mnem->segment_prefix != 0xFF) {
-		return mnem->state->segments[mnem->segment_prefix & 0x3]; // CS/DS/ES/SS override
-	}
-	else {
-		// mod = 00 special case for r/m=110 -> [disp16] uses DS
-		if (mnem->modrm.mod == 0b00 && mnem->modrm.rm == 0b110) {
-			return mnem->state->segments[SEG_DS];
-		}
-		else {
-			switch (mnem->modrm.rm) {
-				case 0b010: // [BP+SI]
-				case 0b011: // [BP+DI]
-				case 0b110: // [BP] (mod != 00)
-					return mnem->state->segments[SEG_SS]; // defaults to SS
-				default:
-					return mnem->state->segments[SEG_DS]; // everything else defaults to DS
-			}
-		}
-	}
-}
-static uint16_t modrm_get_offset(I8086_MNEM* mnem) {
-	switch (mnem->modrm.mod) {
-		case 0b00:
-			if (mnem->modrm.rm == 0b110) {
-				return fetch_word(mnem);
-			}
-			else {
-				return modrm_get_base_offset(mnem);
-			}
-			break;
-
-		case 0b01: {
-			int8_t disp8 = (int8_t)fetch_byte(mnem);
-			return (modrm_get_base_offset(mnem) + disp8) & 0xFFFF;
-		} break;
-
-		case 0b10: {
-			int16_t disp16 = (int16_t)fetch_word(mnem);
-			return (modrm_get_base_offset(mnem) + disp16) & 0xFFFF;
-		} break;
-
-		// case 0b11: register mode never calls this
-		default:
-		case 0b11:
-			return 0;
-	}
+	return mnem->state->segments[modrm_get_segment_index(mnem)];
 }
 
-static uint8_t reg8_read(I8086_MNEM* mnem, uint8_t reg) {
-	if (reg & 0x4) {
-		return mnem->state->registers[reg & 0x3].h;
-	}
-	else {
-		return mnem->state->registers[reg & 0x3].l;
-	}
-}
-static uint16_t reg16_read(I8086_MNEM* mnem, uint8_t reg) {
-	return mnem->state->registers[reg & 0x7].r16;
-}
-
-static OPERAND16 modrm_get_op16(I8086_MNEM* mnem) {
-	OPERAND16 op16 = { 0 };
-	if (mnem->modrm.mod == 0b11) {
-		op16.is_reg = 1;
-		op16.u.reg_index = mnem->modrm.rm;
-	}
-	else {
-		op16.is_reg = 0;
-		op16.u.mem.segment = modrm_get_segment(mnem);
-		op16.u.mem.offset = modrm_get_offset(mnem);
-	}
-	return op16;
-}
-static uint16_t op16_read(I8086_MNEM* mnem, OPERAND16 op16) {
-	if (op16.is_reg) {
-		return reg16_read(mnem, op16.u.reg_index);
-	}
-	else {
-		return read_word(mnem, op16.u.mem.segment, op16.u.mem.offset);
-	}
-}
-
-static OPERAND8 modrm_get_op8(I8086_MNEM* mnem) {
-	OPERAND8 op8 = { 0 };
-	if (mnem->modrm.mod == 0b11) {
-		op8.is_reg = 1;
-		op8.u.reg_index = mnem->modrm.rm;
-	}
-	else {
-		op8.is_reg = 0;
-		op8.u.mem.segment = modrm_get_segment(mnem);
-		op8.u.mem.offset = modrm_get_offset(mnem);
-	}
-	return op8;
-}
-static uint8_t op8_read(I8086_MNEM* mnem, OPERAND8 op8) {
-	if (op8.is_reg) {
-		return reg8_read(mnem, op8.u.reg_index);
-	}
-	else {
-		return read_byte(mnem, op8.u.mem.segment, op8.u.mem.offset);
-	}
-}
-
-/* Swap pointers if 'D' is set bXXXXXXDX */
-static void get_direction(I8086_MNEM* mnem, void** ptr1, void** ptr2) {
-	if (D) {
-		void* tmp = *ptr1;
-		*ptr1 = *ptr2;
-		*ptr2 = tmp;
-	}
-}
-
-static void get_base_mnem(I8086_MNEM* mnem, char* t) {
+static void modrm_get_base_offset_str(I8086_MNEM* mnem, char* t) {
 	switch (mnem->modrm.rm) {
 		case 0b000: // base rel indexed - BX + SI
 			MNEM_F(t, "%s+%s", GET_REG16(REG_BX), GET_REG16(REG_SI));
@@ -382,78 +298,48 @@ static void get_base_mnem(I8086_MNEM* mnem, char* t) {
 			break;
 	}
 }
-static int get_seg_index(I8086_MNEM* mnem) {
-	if (mnem->segment_prefix != 0xFF) {
-		return mnem->segment_prefix; // CS/DS/ES/SS override
-	}
-
-	// mod = 00 special case for r/m=110 -> [disp16] uses DS
-	if (mnem->modrm.mod == 0b00 && mnem->modrm.rm == 0b110) {
-		return SEG_DS;
-	}
-
-	switch (mnem->modrm.rm) {
-		case 0b010: // [BP+SI]
-		case 0b011: // [BP+DI]
-		case 0b110: // [BP] (mod != 00)
-			return SEG_SS;  // defaults to SS
-		default:
-			return SEG_DS;  // everything else defaults to DS
-	}
-}
-static void get_seg(I8086_MNEM* mnem, char* buf, const char* fmt) {
-	MNEM_F(buf, fmt, seg_mnem[get_seg_index(mnem)]);
-}
-
-static void get_signed_disp(char* buf, int disp) {
-	if (disp < 0) {
-		sprintf(buf + strlen(buf), "-%Xh", -disp);
-	}
-	else {
-		sprintf(buf + strlen(buf), "+%Xh", disp);
-	}
-}
-static void get_unsigned_disp(char* buf, int disp) {
-	sprintf(buf + strlen(buf), "%Xh", disp);
+static void modrm_get_segment_str(I8086_MNEM* mnem, char* buf, const char* fmt) {
+	MNEM_F(buf, fmt, seg_mnem[modrm_get_segment_index(mnem)]);
 }
 
 void i8086_mnem_get_modrm(I8086_MNEM* mnem, char* buf, const char* fmt) {
 	// Get R/M pointer
-	char t[32] = { 0 };
 	switch (mnem->modrm.mod) {
-
 		case 0b00:
 			if (mnem->modrm.rm == 0b110) {
 				// displacement mode - [ disp16 ]
-				uint16_t imm = fetch_word(mnem);
-				get_seg(mnem, t, "%s:");
-				get_unsigned_disp(t, imm);
-				MNEM_F(buf, fmt, t);
+				set_ea(mnem, modrm_get_segment(mnem), fetch_word(mnem));
+				modrm_get_segment_str(mnem, mnem->ea_str, "%s:");
+				get_unsigned_disp(mnem->ea_str, mnem->ea_offset);
+				MNEM_F(buf, fmt, mnem->ea_str);
 			}
 			else {
 				// register mode - [ base16 ]
-				get_seg(mnem, t, "%s:");
-				get_base_mnem(mnem, t);
-				MNEM_F(buf, fmt, t);
+				set_ea(mnem, modrm_get_segment(mnem), modrm_get_base_offset(mnem));
+				modrm_get_segment_str(mnem, mnem->ea_str, "%s:");
+				modrm_get_base_offset_str(mnem, mnem->ea_str);
+				MNEM_F(buf, fmt, mnem->ea_str);
 			}
 			break;
 
 		case 0b01: {
 			// memory mode; 8bit displacement - [ base16 + disp8 ]
 			int8_t imm = fetch_byte(mnem);
-			get_seg(mnem, t, "%s:");
-			get_base_mnem(mnem, t);
-			get_signed_disp(t, imm);
-			MNEM_F(buf, fmt, t);
+			set_ea(mnem, modrm_get_segment(mnem), modrm_get_base_offset(mnem) + imm);
+			modrm_get_segment_str(mnem, mnem->ea_str, "%s:");
+			modrm_get_base_offset_str(mnem, mnem->ea_str);
+			get_signed_disp(mnem->ea_str, imm);
+			MNEM_F(buf, fmt, mnem->ea_str);
 		} break;
 
 		case 0b10: {
 			// memory mode; 16bit displacement - [ base16 + disp16 ]
 			int16_t imm = fetch_word(mnem);
-			get_seg(mnem, t, "%s:");
-			get_base_mnem(mnem, t);
-			get_signed_disp(t, imm);
-			MNEM_F(buf, fmt, t);
+			set_ea(mnem, modrm_get_segment(mnem), modrm_get_base_offset(mnem) + imm);
+			modrm_get_segment_str(mnem, mnem->ea_str, "%s:");
+			modrm_get_base_offset_str(mnem, mnem->ea_str);
+			get_signed_disp(mnem->ea_str, imm);
+			MNEM_F(buf, fmt, mnem->ea_str);
 		} break;
 	}
 }
@@ -493,10 +379,24 @@ static void fetch_modrm(I8086_MNEM* mnem) {
 	mnem->modrm.byte = fetch_byte(mnem);
 }
 
-static void set_step_over_target(I8086_MNEM* mnem, uint16_t segment, uint16_t address) {
-	mnem->step_over_has_target = 1;
-	mnem->step_over_segment = segment;
-	mnem->step_over_offset = address;
+static void get_direction(I8086_MNEM* mnem, void** ptr1, void** ptr2) {
+	if (D) {
+		void* tmp = *ptr1;
+		*ptr1 = *ptr2;
+		*ptr2 = tmp;
+	}
+}
+
+static uint16_t get_segment(I8086_MNEM* mnem, uint8_t default_index) {
+	return mnem->state->segments[GET_SEG_OVERRIDE(default_index) & 0x3];
+}
+static const char* get_segment_str(I8086_MNEM* mnem, uint8_t default_index) {
+	return seg_mnem[GET_SEG_OVERRIDE(default_index) & 0x3];
+}
+static void get_segment_override_str(I8086_MNEM* mnem, char* str, const char* fmt) {
+	if (mnem->segment_prefix != 0xFF) {
+		MNEM_F(str, fmt, seg_mnem[mnem->segment_prefix & 0x3]);
+	}
 }
 
 /* Opcodes */
@@ -1330,7 +1230,10 @@ static void jcc(I8086_MNEM* mnem) {
 	}
 
 	if (jump_condition(mnem)) {
-		set_step_over_target(mnem, mnem->segment, mnem->offset + imm);
+		set_step_into_target(mnem, mnem->segment, mnem->offset + imm);
+	}
+	else {
+		set_step_into_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 	}
 }
 static void jmp_intra_direct(I8086_MNEM* mnem) {
@@ -1339,7 +1242,7 @@ static void jmp_intra_direct(I8086_MNEM* mnem) {
 	imm += mnem->counter;
 	MNEM("jmp %04Xh", imm);
 
-	set_step_over_target(mnem, mnem->segment, mnem->offset +  imm);
+	set_step_into_target(mnem, mnem->segment, mnem->offset +  imm);
 }
 static void jmp_inter_direct(I8086_MNEM* mnem) {
 	/* Jump addr:seg (EA) b11101010 */
@@ -1347,7 +1250,7 @@ static void jmp_inter_direct(I8086_MNEM* mnem) {
 	uint16_t imm2 = fetch_word(mnem);
 	MNEM("jmpf %04Xh:%04Xh", imm2, imm);
 
-	set_step_over_target(mnem, imm2, imm);
+	set_step_into_target(mnem, imm2, imm);
 }
 static void jmp_intra_direct_short(I8086_MNEM* mnem) {
 	/* Jump near short (EB) b11101011 */
@@ -1356,7 +1259,7 @@ static void jmp_intra_direct_short(I8086_MNEM* mnem) {
 	se += mnem->counter;
 	MNEM("jmp %04Xh", se);
 
-	set_step_over_target(mnem, mnem->segment, mnem->offset + se);
+	set_step_into_target(mnem, mnem->segment, mnem->offset + se);
 }
 static void jmp_intra_indirect(I8086_MNEM* mnem) {
 	/* Jump near indirect (FE/FF, R/M reg = 100) b1111111W */
@@ -1364,8 +1267,7 @@ static void jmp_intra_indirect(I8086_MNEM* mnem) {
 		const char* rm = modrm_get_mnem16(mnem);
 		MNEM("jmp %s", rm);
 
-		OPERAND16 op16 = modrm_get_op16(mnem);
-		set_step_over_target(mnem, mnem->segment, op16_read(mnem, op16));
+		set_step_into_target(mnem, mnem->segment, read_word(mnem, mnem->ea_segment, mnem->ea_offset));
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
@@ -1378,9 +1280,7 @@ static void jmp_inter_indirect(I8086_MNEM* mnem) {
 		const char* rm = modrm_get_mnem16(mnem);
 		MNEM("jmpf %s", rm);
 
-		uint16_t segment = modrm_get_segment(mnem);
-		uint16_t offset = modrm_get_offset(mnem);
-		set_step_over_target(mnem, read_word(mnem, segment, offset + 2), read_word(mnem, segment, offset));
+		set_step_into_target(mnem, read_word(mnem, mnem->ea_segment, mnem->ea_offset + 2), read_word(mnem, mnem->ea_segment, mnem->ea_offset));
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
@@ -1393,18 +1293,27 @@ static void call_intra_direct(I8086_MNEM* mnem) {
 	uint16_t imm = fetch_word(mnem);
 	imm += mnem->counter;
 	MNEM("call %04Xh", imm);
+
+	set_step_into_target(mnem, mnem->segment, mnem->offset + imm);
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 static void call_inter_direct(I8086_MNEM* mnem) {
 	/* Call addr:seg (9A) b10011010 */
 	uint16_t imm = fetch_word(mnem);
 	uint16_t imm2 = fetch_word(mnem);
 	MNEM("callf %04Xh:%04Xh", imm2, imm);
+
+	set_step_into_target(mnem, imm2, imm);
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 static void call_intra_indirect(I8086_MNEM* mnem) {
 	/* Call near R/M (FE/FF, R/M reg = 010) b1111111W */
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		MNEM("call %s", rm);
+
+		set_step_into_target(mnem, mnem->segment, read_word(mnem, mnem->ea_segment, mnem->ea_offset));
+		set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
@@ -1416,6 +1325,9 @@ static void call_inter_indirect(I8086_MNEM* mnem) {
 	if (W) {
 		const char* rm = modrm_get_mnem16(mnem);
 		MNEM("callf %s", rm);
+
+		set_step_into_target(mnem, read_word(mnem, mnem->ea_segment, mnem->ea_offset + 2), read_word(mnem, mnem->ea_segment, mnem->ea_offset));
+		set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 	}
 	else {
 		const char* rm = modrm_get_mnem8(mnem);
@@ -1428,30 +1340,22 @@ static void ret_intra_add_imm(I8086_MNEM* mnem) {
 	   undocumented* C0 decodes identically to C2 */
 	uint16_t imm = fetch_word(mnem);
 	MNEM("retn %Xh", imm);
-
-	set_step_over_target(mnem, mnem->segment, read_word(mnem, SS, SP));
 }
 static void ret_intra(I8086_MNEM* mnem) {
 	/* Ret (C3) b11000011 
 	undocumented* C1 decodes identically to C3 */
 	MNEM0("retn");
-
-	set_step_over_target(mnem, mnem->segment, read_word(mnem, SS, SP));
 }
 static void ret_inter_add_imm(I8086_MNEM* mnem) {
 	/* Ret imm16 (CA) b11001010 
 	undocumented* C8 decodes identically to CA */
 	uint16_t imm = fetch_word(mnem);
 	MNEM("retf %Xh", imm);
-
-	set_step_over_target(mnem, read_word(mnem, SS, SP + 2), read_word(mnem, SS, SP));
 }
 static void ret_inter(I8086_MNEM* mnem) {
 	/* Ret (CB) b11001011 
 	undocumented* C9 decodes identically to CB */
 	MNEM0("retf");
-
-	set_step_over_target(mnem, read_word(mnem, SS, SP + 2), read_word(mnem, SS, SP));
 }
 
 static void mov_rm_imm(I8086_MNEM* mnem) {
@@ -1499,19 +1403,18 @@ static void mov_rm_reg(I8086_MNEM* mnem) {
 }
 static void mov_accum_mem(I8086_MNEM* mnem) {
 	/* mov AL/AX, [addr] (A0/A1/A2/A3) b101000DW */
-	uint16_t addr = fetch_word(mnem);
-	char t[32] = { 0 };
-	get_seg(mnem, t, "%s:");
-	get_unsigned_disp(t, addr);
+	set_ea(mnem, get_segment(mnem, SEG_DS), fetch_word(mnem));
+	MNEM_F(mnem->ea_str, "%s:", get_segment_str(mnem, SEG_DS));
+	get_unsigned_disp(mnem->ea_str, mnem->ea_offset);
 	if (W) {
-		MNEM_F(mnem->addressing_str, "word [%s]", t);
+		MNEM_F(mnem->addressing_str, "word [%s]", mnem->ea_str);
 		const char* mem = mnem->addressing_str;
 		const char* reg = GET_REG16(REG_AX);
 		get_direction(mnem, &reg, &mem);
 		MNEM("mov %s, %s", reg, mem);
 	}
 	else {
-		MNEM_F(mnem->addressing_str, "byte [%s]", t);
+		MNEM_F(mnem->addressing_str, "byte [%s]", mnem->ea_str);
 		const char* mem = mnem->addressing_str;
 		const char* reg = GET_REG8(REG_AL);
 		get_direction(mnem, &reg, &mem);
@@ -1604,9 +1507,7 @@ static void idiv_rm(I8086_MNEM* mnem) {
 
 static void movs(I8086_MNEM* mnem) {
 	/* movs (A4/A5) b1010010W */
-	if (mnem->segment_prefix != 0xFF) {
-		get_seg(mnem, mnem->str, "%s ");
-	}
+	get_segment_override_str(mnem, mnem->str, "%s:");
 	if (F1) {
 		MNEM0("rep ");
 	}
@@ -1616,12 +1517,12 @@ static void movs(I8086_MNEM* mnem) {
 	else {
 		MNEM0("movsb");
 	}
+
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 static void stos(I8086_MNEM* mnem) {
 	/* stos (AA/AB) b1010101W */
-	if (mnem->segment_prefix != 0xFF) {
-		get_seg(mnem, mnem->str, "%s ");
-	}
+	get_segment_override_str(mnem, mnem->str, "%s:");
 	if (F1) {
 		MNEM0("rep ");
 	}
@@ -1631,12 +1532,12 @@ static void stos(I8086_MNEM* mnem) {
 	else {
 		MNEM0("stosb");
 	}
+
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 static void lods(I8086_MNEM* mnem) {
 	/* lods (AC/AD) b1010110W */
-	if (mnem->segment_prefix != 0xFF) {
-		get_seg(mnem, mnem->str, "%s ");
-	}
+	get_segment_override_str(mnem, mnem->str, "%s:");
 	if (F1) {
 		MNEM0("rep ");
 	}
@@ -1646,12 +1547,12 @@ static void lods(I8086_MNEM* mnem) {
 	else {
 		MNEM0("lodsb");
 	}
+
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 static void cmps(I8086_MNEM* mnem) {
 	/* cmps (A6/A7) b1010011W */
-	if (mnem->segment_prefix != 0xFF) {
-		get_seg(mnem, mnem->str, "%s ");
-	}
+	get_segment_override_str(mnem, mnem->str, "%s:");
 	if (F1) {
 		if (F1Z) {
 			MNEM0("repe ");
@@ -1666,12 +1567,12 @@ static void cmps(I8086_MNEM* mnem) {
 	else {
 		MNEM0("cmpsb");
 	}
+
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 static void scas(I8086_MNEM* mnem) {
 	/* scas (AE/AF) b1010111W */
-	if (mnem->segment_prefix != 0xFF) {
-		get_seg(mnem, mnem->str, "%s ");
-	}
+	get_segment_override_str(mnem, mnem->str, "%s:");
 	if (F1) {
 		if (F1Z) {
 			MNEM0("repe ");
@@ -1686,6 +1587,8 @@ static void scas(I8086_MNEM* mnem) {
 	else {
 		MNEM0("scasb");
 	}
+
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 
 static void les(I8086_MNEM* mnem) {
@@ -1705,6 +1608,8 @@ static void lds(I8086_MNEM* mnem) {
 
 static void xlat(I8086_MNEM* mnem) {
 	/* Get data pointed by BX + AL (D7) b11010111 */
+	set_ea(mnem, get_segment(mnem, SEG_DS), BX + AL);
+	MNEM_F(mnem->ea_str, "bx+al");
 	MNEM0("xlat");
 }
 
@@ -1721,6 +1626,11 @@ static void loopnz(I8086_MNEM* mnem) {
 	uint16_t se = sign_extend8_16(disp);
 	se += mnem->counter;
 	MNEM("loopne %04Xh", se);
+
+	if (CX && !ZF) {
+		set_step_into_target(mnem, mnem->segment, mnem->offset + se);
+	}
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 static void loopz(I8086_MNEM* mnem) {
 	/* loop while zero (E1) b1110000Z */
@@ -1728,6 +1638,11 @@ static void loopz(I8086_MNEM* mnem) {
 	uint16_t se = sign_extend8_16(disp);
 	se += mnem->counter;
 	MNEM("loope %04Xh", se);
+
+	if (CX && ZF) {
+		set_step_into_target(mnem, mnem->segment, mnem->offset + se);
+	}
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 static void loop(I8086_MNEM* mnem) {
 	/* loop if CX not zero (E2) b11100010 */
@@ -1735,6 +1650,11 @@ static void loop(I8086_MNEM* mnem) {
 	uint16_t se = sign_extend8_16(disp);
 	se += mnem->counter;
 	MNEM("loop %04Xh", se);
+
+	if (CX) {
+		set_step_into_target(mnem, mnem->segment, mnem->offset + se);
+	}
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 static void jcxz(I8086_MNEM* mnem) {
 	/* jump if CX zero (E3) b11100011 */
@@ -1744,7 +1664,10 @@ static void jcxz(I8086_MNEM* mnem) {
 	MNEM("jcxz %04Xh", se);
 
 	if (CX == 0) {
-		set_step_over_target(mnem, mnem->segment, mnem->offset + se);
+		set_step_into_target(mnem, mnem->segment, mnem->offset + se);
+	}
+	else {
+		set_step_into_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 	}
 }
 
@@ -1790,6 +1713,9 @@ static void out_accum_dx(I8086_MNEM* mnem) {
 static void int3(I8086_MNEM* mnem) {
 	/* interrupt CC b11001100 */
 	MNEM0("int3");
+
+	set_step_into_target(mnem, read_word(mnem, 0, (3 * 4) + 2), read_word(mnem, 0, 3 * 4));
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 
 static void int_(I8086_MNEM* mnem) {
@@ -1799,16 +1725,22 @@ static void int_(I8086_MNEM* mnem) {
 		type = fetch_byte(mnem);
 	}
 	MNEM("int %Xh", type);
+
+	set_step_into_target(mnem, read_word(mnem, 0, (type * 4) + 2), read_word(mnem, 0, type * 4));
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 static void into(I8086_MNEM* mnem) {
 	/* interrupt on overflow (CE) b11001110 */
 	MNEM0("into");
+
+	if (OF) {
+		set_step_into_target(mnem, read_word(mnem, 0, (4 * 4) + 2), read_word(mnem, 0, 4 * 4));
+	}
+	set_step_over_target(mnem, mnem->segment, mnem->offset + mnem->counter);
 }
 static void iret(I8086_MNEM* mnem) {
 	/* interrupt on return (CF) b11001111 */
 	MNEM0("iret");
-
-	set_step_over_target(mnem, read_word(mnem, SS, SP + 2), read_word(mnem, SS, SP));
 }
 
 static int rep(I8086_MNEM* mnem) {
@@ -1845,10 +1777,19 @@ static void i8086_next(I8086_MNEM* mnem, uint16_t seg, uint16_t offset) {
 	
 	mnem->str[0] = '\0'; 
 	mnem->addressing_str[0] = '\0';
+	mnem->ea_str[0] = '\0';
+
+	mnem->has_ea = 0;
+	mnem->ea_segment = 0;
+	mnem->ea_offset = 0;
 
 	mnem->step_over_has_target = 0;
 	mnem->step_over_segment = 0;
 	mnem->step_over_offset = 0;
+
+	mnem->step_into_has_target = 0;
+	mnem->step_into_segment = 0;
+	mnem->step_into_offset = 0;
 }
 
 static void i8086_fetch(I8086_MNEM* mnem, uint16_t seg, uint16_t offset) {
@@ -2486,9 +2427,17 @@ int i8086_mnem_at(I8086_MNEM* mnem, uint16_t segment, uint16_t offset) {
 	return i8086_decode_instruction(mnem);
 }
 
-uint32_t i8086_mnem_get_step_over_target(I8086_MNEM* mnem) {
+uint20_t i8086_mnem_get_step_over_target(I8086_MNEM* mnem) {
 	if (mnem->step_over_has_target) {
 		return i8086_get_physical_address(mnem->step_over_segment, mnem->step_over_offset);
+	}
+	else {
+		return i8086_get_physical_address(mnem->segment, mnem->offset + mnem->counter);
+	}
+}
+uint20_t i8086_mnem_get_step_into_target(I8086_MNEM* mnem) {
+	if (mnem->step_into_has_target) {
+		return i8086_get_physical_address(mnem->step_into_segment, mnem->step_into_offset);
 	}
 	else {
 		return i8086_get_physical_address(mnem->segment, mnem->offset + mnem->counter);
