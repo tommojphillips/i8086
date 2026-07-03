@@ -6,7 +6,7 @@ Passes **all** I8088 hardware-generated single step tests including all undefine
   - See: [SingleStepTests/8088](https://github.com/SingleStepTests/8088) (v2 and v2_undefined).
 
 You can run the tests yourself using the test program.
-  - See: [i8086_test](https://github.com/tommojphillips/i8086_test)
+  - See: [I8086 Test](https://github.com/tommojphillips/i8086_test)
 
 Want to see this cpu in action?
   - See: [IBM 5150/5160 PC Emulator](https://github.com/tommojphillips/ibm_pc)
